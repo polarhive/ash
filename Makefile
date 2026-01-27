@@ -1,4 +1,4 @@
-.PHONY: build run clean test deps help
+.PHONY: build run clean test deps help docker-build
 
 # Detect OS for CGO flags
 UNAME_S := $(shell uname -s)
@@ -32,4 +32,8 @@ clean: ## Remove built binaries and generated files
 test: ## Run tests
 	go test -v ./...
 
+docker-build: ## Build using Docker for cross-compilation to Ubuntu
+	docker build --platform linux/amd64 -t ash .
+	docker run --rm -v $(PWD):/host ash cp /usr/local/bin/ash /host/ash-linux-amd64
+	scp ash-linux-amd64 ark:ash/
 .DEFAULT_GOAL := run
