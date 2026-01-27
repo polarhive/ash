@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -9,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -72,6 +74,8 @@ func (s *MetaSyncStore) SaveRoomAccountData(ctx context.Context, userID id.UserI
 type RoomIDEntry struct {
 	ID      string `json:"id"`
 	Comment string `json:"comment"`
+	Hook    string `json:"hook,omitempty"`
+	Key     string `json:"key,omitempty"`
 }
 
 type Config struct {
@@ -366,6 +370,36 @@ func ExtractLinks(text string) []string {
 	return urlRe.FindAllString(text, -1)
 }
 
+func sendHook(hookURL, link, key string) {
+	payload := map[string]string{"link": link}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		log.Error().Err(err).Str("hook_url", hookURL).Str("link", link).Msg("failed to marshal hook payload")
+		return
+	}
+	req, err := http.NewRequest("POST", hookURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Error().Err(err).Str("hook_url", hookURL).Str("link", link).Msg("failed to create hook request")
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Error().Err(err).Str("hook_url", hookURL).Str("link", link).Msg("failed to send hook")
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		log.Warn().Int("status", resp.StatusCode).Str("hook_url", hookURL).Str("link", link).Msg("hook response not ok")
+	} else {
+		log.Info().Str("hook_url", hookURL).Str("link", link).Msg("hook sent successfully")
+	}
+}
+
 type LinkRow struct {
 	MessageID string `json:"message_id"`
 	URL       string `json:"url"`
@@ -552,6 +586,11 @@ func run(ctx context.Context, metaDB *sql.DB, messagesDB *sql.DB, cfg *Config) e
 			log.Info().Int("count", len(msgData.URLs)).Msg("found links:")
 			for _, u := range msgData.URLs {
 				log.Info().Str("url", u).Msg("link")
+			}
+			if currentRoom.Hook != "" {
+				for _, u := range msgData.URLs {
+					go sendHook(currentRoom.Hook, u, currentRoom.Key)
+				}
 			}
 		}
 		if len(msgData.URLs) > 0 {
