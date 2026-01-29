@@ -35,5 +35,4 @@ test: ## Run tests
 docker-build: ## Build using Docker for cross-compilation to Ubuntu
 	docker build --platform linux/amd64 -t ash .
 	docker run --rm -v $(PWD):/host ash cp /usr/local/bin/ash /host/ash-linux-amd64
-	scp ash-linux-amd64 ark:ash/ash-linux-amd64
 .DEFAULT_GOAL := run

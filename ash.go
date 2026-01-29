@@ -463,6 +463,45 @@ func ExportAllSnapshots(db *sql.DB, rooms []RoomIDEntry, path string) error {
 	return nil
 }
 
+// BlacklistEntry represents a regex pattern and comment from blacklist.json
+type BlacklistEntry struct {
+	Pattern string `json:"pattern"`
+	Comment string `json:"comment"`
+}
+
+// LoadBlacklist loads blacklist.json and compiles regex patterns
+func LoadBlacklist(path string) ([]*regexp.Regexp, error) {
+	var entries []BlacklistEntry
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	dec := json.NewDecoder(file)
+	if err := dec.Decode(&entries); err != nil {
+		return nil, err
+	}
+	var regexps []*regexp.Regexp
+	for _, entry := range entries {
+		re, err := regexp.Compile(entry.Pattern)
+		if err != nil {
+			return nil, err
+		}
+		regexps = append(regexps, re)
+	}
+	return regexps, nil
+}
+
+// IsBlacklisted checks if a URL matches any blacklist regex
+func IsBlacklisted(url string, blacklist []*regexp.Regexp) bool {
+	for _, re := range blacklist {
+		if re.MatchString(url) {
+			return true
+		}
+	}
+	return false
+}
+
 // getLogLevel reads the DEBUG flag from config.json to set the log level early
 func getLogLevel() zerolog.Level {
 	cfgPreview := struct {
@@ -587,8 +626,16 @@ func run(ctx context.Context, metaDB *sql.DB, messagesDB *sql.DB, cfg *Config) e
 			for _, u := range msgData.URLs {
 				log.Info().Str("url", u).Msg("link")
 			}
+			blacklist, err := LoadBlacklist("blacklist.json")
+			if err != nil {
+				log.Error().Err(err).Msg("failed to load blacklist")
+			}
 			if currentRoom.Hook != "" {
 				for _, u := range msgData.URLs {
+					if blacklist != nil && IsBlacklisted(u, blacklist) {
+						log.Info().Str("url", u).Msg("skipped blacklisted url")
+						continue
+					}
 					go sendHook(currentRoom.Hook, u, currentRoom.Key)
 				}
 			}

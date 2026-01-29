@@ -1,0 +1,126 @@
+[
+    {
+        "pattern": "dropbox\\.com",
+        "comment": "Dropbox URLs are not allowed"
+    },
+    {
+        "pattern": "onedrive\\.live\\.com",
+        "comment": "OneDrive URLs are not allowed"
+    },
+    {
+        "pattern": "[a-zA-Z0-9_-]+\\.google\\.com",
+        "comment": "All subdomains of google.com are not allowed"
+    },
+    {
+        "pattern": "google\\.com",
+        "comment": "Google.com URLs are not allowed"
+    },
+    {
+        "pattern": "box\\.com",
+        "comment": "Box URLs are not allowed"
+    },
+    {
+        "pattern": "figma\\.com",
+        "comment": "Figma URLs are not allowed"
+    },
+    {
+        "pattern": "slack\\.com",
+        "comment": "Slack URLs are not allowed"
+    },
+    {
+        "pattern": "zoom\\.us",
+        "comment": "Zoom URLs are not allowed"
+    },
+    {
+        "pattern": "teams\\.microsoft\\.com",
+        "comment": "Microsoft Teams URLs are not allowed"
+    },
+    {
+        "pattern": "facebook\\.com",
+        "comment": "Facebook URLs are not allowed"
+    },
+    {
+        "pattern": "twitter\\.com",
+        "comment": "Twitter URLs are not allowed"
+    },
+    {
+        "pattern": "instagram\\.com",
+        "comment": "Instagram URLs are not allowed"
+    },
+    {
+        "pattern": "linkedin\\.com",
+        "comment": "LinkedIn URLs are not allowed"
+    },
+    {
+        "pattern": "youtube\\.com",
+        "comment": "YouTube URLs are not allowed"
+    },
+    {
+        "pattern": "reddit\\.com",
+        "comment": "Reddit URLs are not allowed"
+    },
+    {
+        "pattern": "tiktok\\.com",
+        "comment": "TikTok URLs are not allowed"
+    },
+    {
+        "pattern": "mega\\.nz",
+        "comment": "Mega cloud storage URLs are not allowed"
+    },
+    {
+        "pattern": "icloud\\.com",
+        "comment": "iCloud URLs are not allowed"
+    },
+    {
+        "pattern": "pcloud\\.com",
+        "comment": "pCloud storage URLs are not allowed"
+    },
+    {
+        "pattern": "trello\\.com",
+        "comment": "Trello collaboration URLs are not allowed"
+    },
+    {
+        "pattern": "asana\\.com",
+        "comment": "Asana project management URLs are not allowed"
+    },
+    {
+        "pattern": "monday\\.com",
+        "comment": "Monday.com work management URLs are not allowed"
+    },
+    {
+        "pattern": "webex\\.com",
+        "comment": "Webex meeting URLs are not allowed"
+    },
+    {
+        "pattern": "gotomeeting\\.com",
+        "comment": "GoToMeeting URLs are not allowed"
+    },
+    {
+        "pattern": "snapchat\\.com",
+        "comment": "Snapchat URLs are not allowed"
+    },
+    {
+        "pattern": "pinterest\\.com",
+        "comment": "Pinterest URLs are not allowed"
+    },
+    {
+        "pattern": "tumblr\\.com",
+        "comment": "Tumblr URLs are not allowed"
+    },
+    {
+        "pattern": "mediafire\\.com",
+        "comment": "MediaFire file sharing URLs are not allowed"
+    },
+    {
+        "pattern": "4shared\\.com",
+        "comment": "4shared file sharing URLs are not allowed"
+    },
+    {
+        "pattern": "discord\\.com",
+        "comment": "Discord chat URLs are not allowed"
+    },
+    {
+        "pattern": "telegram\\.org",
+        "comment": "Telegram URLs are not allowed"
+    }
+]
