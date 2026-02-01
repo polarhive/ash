@@ -429,6 +429,32 @@ func resolveURL(url string) string {
 	return resp.Request.URL.String()
 }
 
+// fetchRandomJoke fetches a random dad joke from icanhazdadjoke.com
+func fetchRandomJoke(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://icanhazdadjoke.com/", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "ash-bot (https://github.com/polarhive/ash)")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status: %d", resp.StatusCode)
+	}
+	var payload struct {
+		Joke string `json:"joke"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	return payload.Joke, nil
+}
+
 type LinkRow struct {
 	MessageID string `json:"message_id"`
 	URL       string `json:"url"`
@@ -629,22 +655,38 @@ func run(ctx context.Context, metaDB *sql.DB, messagesDB *sql.DB, cfg *Config) e
 			return
 		}
 		log.Info().Str("sender", string(ev.Sender)).Str("room", currentRoom.Comment).Msg(truncate(msgData.Msg.Body, 100))
-		if msgData.Msg.Body == "/bot hi" {
+		if msgData.Msg.Body == "/bot hi" || msgData.Msg.Body == "/bot joke" {
 			select {
 			case <-readyChan:
 			case <-evCtx.Done():
 				return
 			}
+			var body string
+			if msgData.Msg.Body == "/bot hi" {
+				body = "hello"
+			} else {
+				joke, err := fetchRandomJoke(evCtx)
+				if err != nil {
+					log.Error().Err(err).Msg("failed to fetch joke")
+					body = "sorry, couldn't fetch a joke right now"
+				} else {
+					body = joke
+				}
+			}
 			content := event.MessageEventContent{
 				MsgType:   event.MsgText,
-				Body:      "hello",
+				Body:      body,
 				RelatesTo: &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: ev.ID}},
 			}
 			_, err := client.SendMessageEvent(evCtx, ev.RoomID, event.EventMessage, &content)
 			if err != nil {
 				log.Error().Err(err).Msg("failed to send response")
 			} else {
-				log.Info().Msg("sent hello response")
+				if msgData.Msg.Body == "/bot hi" {
+					log.Info().Msg("sent hello response")
+				} else {
+					log.Info().Msg("sent joke response")
+				}
 			}
 			return
 		}
