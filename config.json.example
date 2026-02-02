@@ -1,0 +1,26 @@
+{
+    "MATRIX_HOMESERVER": "https://matrix.homeserver.tld",
+    "MATRIX_USER": "@username:homeserver.tld",
+    "MATRIX_PASSWORD": "xxxxx",
+    "MATRIX_RECOVERY_KEY": "xxxxx xxxxx xxxxx xxxxx xxxxx xxxxx xxxxx xxxxx xxxxx xxxxx xxxxx xxxxx",
+    "MATRIX_ROOM_ID": [
+        {
+            "id": "!id:beeper.local",
+            "comment": "room_1",
+            "hook": "https://linkstash.your-domain.tld/api/add",
+            "key": "mentor-here",
+            "sendUser": true,
+            "sendTopic": true,
+            "allowedCommands": []
+        }
+    ],
+    "BOT_REPLY_LABEL": "[BOT] ",
+    "LINKSTASH_URL": "https://linkstash.your-domain.tld",
+    "MATRIX_DEVICE_NAME": "ash",
+    "META_DB_PATH": "./data/meta.db",
+    "DB_PATH": "./data/messages.db",
+    "LINKS_JSON_PATH": "./data/links.json",
+    "BOT_CONFIG_PATH": "./bot.json",
+    "DEBUG": false,
+    "OPT_OUT_TAG": "#private"
+}

@@ -16,6 +16,13 @@ ENV GOARCH=amd64
 # Set working directory
 WORKDIR /app
 
+# Copy go mod files first for better caching
+COPY go.mod go.sum ./
+
+# Download dependencies (cached if go.mod/go.sum unchanged)
+RUN go mod download
+
+# Copy source code
 COPY . .
 
 # Build the application

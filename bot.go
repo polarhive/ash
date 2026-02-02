@@ -42,7 +42,7 @@ func LoadBotConfig(path string) (*BotConfig, error) {
 }
 
 // FetchBotCommand executes the configured command and returns a string to post.
-func FetchBotCommand(ctx context.Context, c *BotCommand) (string, error) {
+func FetchBotCommand(ctx context.Context, c *BotCommand, linkstashURL string) (string, error) {
 	method := c.Method
 	if method == "" {
 		method = "GET"
@@ -82,6 +82,10 @@ func FetchBotCommand(ctx context.Context, c *BotCommand) (string, error) {
 		if s, ok := v.(string); ok {
 			return strings.TrimSpace(s), nil
 		}
+		// Check if it's an array of posts (for summary)
+		if arr, ok := v.([]interface{}); ok {
+			return formatPosts(arr, linkstashURL), nil
+		}
 		// try to marshal the value to string
 		if v != nil {
 			b, _ := json.Marshal(v)
@@ -109,4 +113,25 @@ func extractJSONPath(root interface{}, path string) interface{} {
 		}
 	}
 	return cur
+}
+
+// formatPosts formats an array of post objects into a readable string.
+func formatPosts(posts []interface{}, linkstashURL string) string {
+	var sb strings.Builder
+	limit := 5
+	if len(posts) < limit {
+		limit = len(posts)
+	}
+	for i := 0; i < limit; i++ {
+		p := posts[i]
+		if m, ok := p.(map[string]interface{}); ok {
+			title, _ := m["title"].(string)
+			url, _ := m["url"].(string)
+			if title != "" && url != "" {
+				sb.WriteString(fmt.Sprintf("- %s (%s)\n", title, url))
+			}
+		}
+	}
+	sb.WriteString(fmt.Sprintf("\nSee full list: %s", linkstashURL))
+	return sb.String()
 }

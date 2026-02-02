@@ -13,6 +13,11 @@
             "method": "GET",
             "url": "https://catfact.ninja/fact",
             "json_path": "fact"
+        },
+        "summary": {
+            "method": "GET",
+            "url": "https://linkstash.hsp-ec.xyz/api/summary",
+            "json_path": "summary"
         }
     }
 }

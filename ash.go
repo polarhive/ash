@@ -72,13 +72,13 @@ func (s *MetaSyncStore) SaveRoomAccountData(ctx context.Context, userID id.UserI
 }
 
 type RoomIDEntry struct {
-	ID         string `json:"id"`
-	Comment    string `json:"comment"`
-	Hook       string `json:"hook,omitempty"`
-	Key        string `json:"key,omitempty"`
-	SendUser   bool   `json:"sendUser,omitempty"`
-	SendTopic  bool   `json:"sendTopic,omitempty"`
-	BotEnabled bool   `json:"botEnabled,omitempty"`
+	ID              string   `json:"id"`
+	Comment         string   `json:"comment"`
+	Hook            string   `json:"hook,omitempty"`
+	Key             string   `json:"key,omitempty"`
+	SendUser        bool     `json:"sendUser,omitempty"`
+	SendTopic       bool     `json:"sendTopic,omitempty"`
+	AllowedCommands []string `json:"allowedCommands,omitempty"`
 }
 
 type Config struct {
@@ -92,6 +92,7 @@ type Config struct {
 	LinksPath     string        `json:"LINKS_JSON_PATH"`
 	BotConfigPath string        `json:"BOT_CONFIG_PATH"`
 	BotReplyLabel string        `json:"BOT_REPLY_LABEL,omitempty"`
+	LinkstashURL  string        `json:"LINKSTASH_URL,omitempty"`
 	SyncTimeoutMS int           `json:"SYNC_TIMEOUT_MS"`
 	Debug         bool          `json:"DEBUG"`
 	DeviceName    string        `json:"MATRIX_DEVICE_NAME"`
@@ -669,7 +670,11 @@ func run(ctx context.Context, metaDB *sql.DB, messagesDB *sql.DB, cfg *Config) e
 			return
 		}
 		log.Info().Str("sender", string(ev.Sender)).Str("room", currentRoom.Comment).Msg(truncate(msgData.Msg.Body, 100))
-		if currentRoom.BotEnabled && strings.HasPrefix(msgData.Msg.Body, "/bot") {
+		if cfg.BotReplyLabel != "" && strings.Contains(msgData.Msg.Body, cfg.BotReplyLabel) {
+			log.Debug().Str("label", cfg.BotReplyLabel).Msg("skipped bot processing due to bot reply label")
+			return
+		}
+		if currentRoom.AllowedCommands != nil && strings.HasPrefix(msgData.Msg.Body, "/bot") {
 			select {
 			case <-readyChan:
 			case <-evCtx.Done():
@@ -683,10 +688,12 @@ func run(ctx context.Context, metaDB *sql.DB, messagesDB *sql.DB, cfg *Config) e
 			var body string
 			if cmd == "" || cmd == "hi" {
 				body = "hello"
+			} else if len(currentRoom.AllowedCommands) > 0 && !inSlice(currentRoom.AllowedCommands, cmd) {
+				body = "command not allowed in this room"
 			} else {
 				if botCfg != nil {
 					if cmdCfg, ok := botCfg.Commands[cmd]; ok {
-						resp, err := FetchBotCommand(evCtx, &cmdCfg)
+						resp, err := FetchBotCommand(evCtx, &cmdCfg, cfg.LinkstashURL)
 						if err != nil {
 							log.Error().Err(err).Str("cmd", cmd).Msg("failed to fetch bot command")
 							body = fmt.Sprintf("sorry, couldn't fetch %s right now", cmd)
@@ -811,6 +818,15 @@ func run(ctx context.Context, metaDB *sql.DB, messagesDB *sql.DB, cfg *Config) e
 	<-ctx.Done()
 	log.Debug().Msg("exiting run")
 	return ctx.Err()
+}
+
+func inSlice(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
 func truncate(s string, maxLen int) string {
