@@ -4,62 +4,69 @@
             "response": "hello"
         },
         "joke": {
-            "handler": "joke",
-            "params": {
-                "url": "https://icanhazdadjoke.com/",
-                "headers": {
-                    "Accept": "application/json"
-                }
-            }
+            "type": "http",
+            "url": "https://icanhazdadjoke.com/",
+            "headers": {
+                "Accept": "application/json"
+            },
+            "json_path": "joke",
+            "output_type": "text"
         },
         "catfact": {
+            "type": "http",
             "method": "GET",
             "url": "https://catfact.ninja/fact",
-            "json_path": "fact"
+            "json_path": "fact",
+            "output_type": "text"
         },
         "summary": {
-            "url": "https://linkstash.hsp-ec.xyz/api/summary",
-            "json_path": "summary",
-            "handler": "summary",
+            "type": "ai",
             "model": "openai/gpt-oss-120b",
             "max_tokens": 8192,
-            "prompt": "Provide a short 2-line summary of what these articles are about, focusing on the main topics and key insights. using WhatsApp-style markdown formatting (*bold*, _italic_, ~strikethrough~, ```code```). Do not use emojis, double asterisk for bold **** only use single, no md ## headings or tables. Be helpful, truthful, and engaging."
+            "prompt": "Provide a short 2-line summary of what these articles are about, focusing on the main topics and key insights. using WhatsApp-style markdown formatting (*bold*, _italic_, ~strikethrough~, ```code```). Do not use emojis, no double asterisk pair for bold **** only use single **, no md ## headings or tables. Be helpful, truthful, and engaging.",
+            "input_type": "text",
+            "output_type": "text"
         },
         "quack": {
-            "handler": "quack",
-            "params": {
-                "url": "https://random-d.uk/api/random"
-            }
+            "type": "http",
+            "url": "https://random-d.uk/api/random",
+            "json_path": "url",
+            "output_type": "image"
         },
         "meow": {
-            "handler": "meow",
-            "params": {
-                "url": "https://api.thecatapi.com/v1/images/search"
-            }
+            "type": "http",
+            "url": "https://api.thecatapi.com/v1/images/search",
+            "json_path": "0.url",
+            "output_type": "image"
         },
         "deepfry": {
-            "handler": "deepfry",
-            "params": {
-                "imagemagick_args": [
-                    "-modulate",
-                    "100,250,100",
-                    "-contrast-stretch",
-                    "0",
-                    "-statistic",
-                    "NonPeak",
-                    "3",
-                    "-sharpen",
-                    "0x10",
-                    "-implode",
-                    "0.3"
-                ]
-            }
+            "type": "exec",
+            "command": "convert",
+            "args": [
+                "{input}",
+                "-modulate",
+                "100,250,100",
+                "-contrast-stretch",
+                "0",
+                "-statistic",
+                "NonPeak",
+                "3",
+                "-sharpen",
+                "0x10",
+                "-implode",
+                "0.3",
+                "{output}"
+            ],
+            "input_type": "image",
+            "output_type": "image"
         },
         "gork": {
-            "handler": "gork",
+            "type": "ai",
             "model": "openai/gpt-oss-120b",
             "max_tokens": 8192,
-            "prompt": "Respond as an AI assistant using WhatsApp-style markdown formatting (*bold*, _italic_, ~strikethrough~, ```code```). Do not use emojis, double asterisk for bold **** only use single, no md ## headings or tables. Be helpful, truthful, and engaging."
+            "prompt": "Respond as an AI assistant using WhatsApp-style markdown formatting (*bold*, _italic_, ~strikethrough~, ```code```). Do not use emojis, no double asterisk pair for bold **** only use single**, no md ## headings or tables. Be helpful, truthful, and engaging.",
+            "input_type": "text",
+            "output_type": "text"
         }
     }
 }

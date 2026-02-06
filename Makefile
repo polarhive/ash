@@ -30,7 +30,7 @@ clean: ## Remove built binaries and generated files
 	rm -rf ./data/*
 
 test: ## Run tests
-	go test -v ./...
+	cd test && go test -v
 
 docker-build: ## Build using Docker for cross-compilation to Ubuntu
 	docker build --platform linux/amd64 -t ash .

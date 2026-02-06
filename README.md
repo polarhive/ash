@@ -8,15 +8,48 @@
 
 ## Bot commands (bot.json)
 
-You can configure bot commands in `bot.json`. Commands can be HTTP-backed, static responses, or use special handlers. Example commands included:
+You can configure bot commands in `bot.json`. Commands are fully composable and support three types:
 
-- `/bot hi` or just `/bot` — returns a greeting
-- `/bot joke` — uses icanhazdadjoke API (returns the `joke` field)
-- `/bot catfact` — uses catfact.ninja API (returns the `fact` field)
-- `/bot summary` — fetches recent articles from linkstash and summarizes them using Groq AI
-- `/bot gork <message>` — responds to queries using Groq AI (alias: `@gork <message>`)
+### Command Types
 
-Commands can also be configured with static responses using the `response` field.
+- **`exec`**: Runs arbitrary executables with arguments. Supports `{input}` and `{output}` placeholders for file processing (e.g., image manipulation).
+- **`http`**: Makes HTTP requests and returns responses (text or images).
+- **`ai`**: Uses Groq AI with custom prompts for intelligent responses.
+
+### Example Commands
+
+```json
+{
+  "deepfry": {
+    "type": "exec",
+    "command": "magick",
+    "args": ["{input}", "-modulate", "200,200", "-sharpen", "0x3", "{output}"],
+    "input_type": "image",
+    "output_type": "image"
+  },
+  "quack": {
+    "type": "http",
+    "url": "https://random-d.uk/api/v2/random",
+    "method": "GET",
+    "headers": {"User-Agent": "ash-bot"},
+    "output_type": "image"
+  },
+  "summary": {
+    "type": "ai",
+    "prompt": "Summarize these articles concisely:",
+    "model": "llama3-8b-8192",
+    "max_tokens": 500
+  }
+}
+```
+
+### Available Commands
+
+- `/bot deepfry` — Deepfries attached images using ImageMagick
+- `/bot quack` — Returns a random duck image
+- `/bot meow` — Returns a random cat image
+- `/bot summary` — Fetches recent articles from linkstash and summarizes them using Groq AI
+- `/bot gork <message>` — Responds to queries using Groq AI (alias: `@gork <message>`)
 
 Add or change commands in `bot.json` and set `BOT_CONFIG_PATH` in `config.json` if you place it elsewhere. The bot will prefix responses using `BOT_REPLY_LABEL` in `config.json` (defaults to `[BOT]\n`).
 
@@ -77,6 +110,7 @@ Edit `config.json`:
 
 - `make`: Build and run
 - `make build`: Build only
+- `make test`: Run tests (validates bot.json configuration)
 - `make clean`: Clean build artifacts
 
 Links are exported to `data/links.json`.

@@ -21,17 +21,21 @@ import (
 
 // BotCommand describes a bot command that can return text or images
 type BotCommand struct {
+	Type         string                 `json:"type"` // "http", "exec", "ai"
 	Method       string                 `json:"method,omitempty"`
-	URL          string                 `json:"url"`
+	URL          string                 `json:"url,omitempty"`
 	Headers      map[string]string      `json:"headers,omitempty"`
 	JSONPath     string                 `json:"json_path,omitempty"`
-	ResponseType string                 `json:"response_type,omitempty"` // "text", "json", or "image" (optional)
-	Handler      string                 `json:"handler,omitempty"`       // "http", "quack", "meow", "deepfry", "joke" (optional)
-	Model        string                 `json:"model,omitempty"`         // Groq model for AI commands
-	MaxTokens    int                    `json:"max_tokens,omitempty"`    // Maximum tokens for AI responses
-	Prompt       string                 `json:"prompt,omitempty"`        // System prompt for AI commands
-	Response     string                 `json:"response,omitempty"`      // Static response text
-	Params       map[string]interface{} `json:"params,omitempty"`        // Additional parameters for handlers
+	ResponseType string                 `json:"response_type,omitempty"` // "text", "json", "image"
+	Command      string                 `json:"command,omitempty"`       // for exec
+	Args         []string               `json:"args,omitempty"`          // for exec
+	InputType    string                 `json:"input_type,omitempty"`    // "none", "text", "image"
+	OutputType   string                 `json:"output_type,omitempty"`   // "text", "image"
+	Model        string                 `json:"model,omitempty"`         // for ai
+	MaxTokens    int                    `json:"max_tokens,omitempty"`    // for ai
+	Prompt       string                 `json:"prompt,omitempty"`        // for ai
+	Response     string                 `json:"response,omitempty"`      // static response
+	Params       map[string]interface{} `json:"params,omitempty"`        // additional params
 }
 
 // BotConfig is the structure of bot.json
@@ -60,27 +64,21 @@ func FetchBotCommand(ctx context.Context, c *BotCommand, linkstashURL string, ev
 	if c.Response != "" {
 		return c.Response, nil
 	}
-	// Check if this command uses a special handler
-	if c.Handler != "" {
-		switch c.Handler {
-		case "quack":
-			return handleQuackCommand(ctx, ev, matrixClient, c)
-		case "meow":
-			return handleMeowCommand(ctx, ev, matrixClient, c)
-		case "deepfry":
-			return handleDeepfryCommand(ctx, ev, matrixClient, c)
-		case "joke":
-			return handleJokeCommand(ctx, c)
-		case "summary":
-			return handleSummaryCommand(ctx, ev, c, groqAPIKey)
-		case "gork":
-			return handleGorkCommand(ctx, ev, matrixClient, c, groqAPIKey)
-		default:
-			return "", fmt.Errorf("unknown handler: %s", c.Handler)
-		}
+	// Execute based on command type
+	switch c.Type {
+	case "http":
+		return handleHttpCommand(ctx, c, linkstashURL, ev, matrixClient)
+	case "exec":
+		return handleExecCommand(ctx, ev, matrixClient, c)
+	case "ai":
+		return handleAiCommand(ctx, ev, matrixClient, c, groqAPIKey)
+	default:
+		return "", fmt.Errorf("unknown command type: %s", c.Type)
 	}
+}
 
-	// Original HTTP-based command logic
+// handleHttpCommand handles HTTP-based commands
+func handleHttpCommand(ctx context.Context, c *BotCommand, linkstashURL string, ev *event.Event, matrixClient *mautrix.Client) (string, error) {
 	method := c.Method
 	if method == "" {
 		method = "GET"
@@ -118,7 +116,53 @@ func FetchBotCommand(ctx context.Context, c *BotCommand, linkstashURL string, ev
 		}
 		v := extractJSONPath(j, c.JSONPath)
 		if s, ok := v.(string); ok {
-			return strings.TrimSpace(s), nil
+			if c.OutputType == "image" {
+				// Download and upload image asynchronously
+				go func(url string) {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Error().Interface("panic", r).Msg("panic in http image download")
+						}
+					}()
+					imageResp, err := http.Get(url)
+					if err != nil {
+						log.Warn().Err(err).Str("url", url).Msg("failed to download image")
+						return
+					}
+					defer imageResp.Body.Close()
+					if imageResp.StatusCode != http.StatusOK {
+						log.Warn().Int("status", imageResp.StatusCode).Str("url", url).Msg("image download failed")
+						return
+					}
+					imageData, err := io.ReadAll(imageResp.Body)
+					if err != nil {
+						log.Warn().Err(err).Str("url", url).Msg("failed to read image data")
+						return
+					}
+					contentType := imageResp.Header.Get("Content-Type")
+					if contentType == "" {
+						contentType = "image/jpeg"
+					}
+					uploadResp, err := matrixClient.UploadBytes(context.Background(), imageData, contentType)
+					if err != nil {
+						log.Warn().Err(err).Str("url", url).Msg("failed to upload image")
+						return
+					}
+					imageContent := event.MessageEventContent{
+						MsgType:   event.MsgImage,
+						Body:      "image.jpg",
+						URL:       uploadResp.ContentURI.CUString(),
+						RelatesTo: &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: ev.ID}},
+					}
+					_, err = matrixClient.SendMessageEvent(context.Background(), ev.RoomID, event.EventMessage, &imageContent)
+					if err != nil {
+						log.Warn().Err(err).Msg("failed to send image")
+					}
+				}(s)
+				return "", nil
+			} else {
+				return strings.TrimSpace(s), nil
+			}
 		}
 		// Check if it's an array of posts (for summary)
 		if arr, ok := v.([]interface{}); ok {
@@ -133,6 +177,353 @@ func FetchBotCommand(ctx context.Context, c *BotCommand, linkstashURL string, ev
 	}
 	// Default: return body as text
 	return strings.TrimSpace(string(bodyBytes)), nil
+}
+
+// handleExecCommand handles executable commands
+func handleExecCommand(ctx context.Context, ev *event.Event, matrixClient *mautrix.Client, c *BotCommand) (string, error) {
+	var inputPath string
+	if c.InputType == "image" {
+		// Copy image download logic from handleDeepfryCommand
+		// Parse the message content
+		if ev.Content.Raw != nil {
+			if err := ev.Content.ParseRaw(ev.Type); err != nil {
+				if !strings.Contains(err.Error(), "already parsed") {
+					return "", fmt.Errorf("failed to parse event: %w", err)
+				}
+			}
+		}
+
+		msg := ev.Content.AsMessage()
+		if msg == nil {
+			return "", fmt.Errorf("not a message event")
+		}
+
+		var imageMsg *event.MessageEventContent
+
+		if msg.MsgType == event.MsgImage || msg.MsgType == "m.sticker" || msg.URL != "" || msg.File != nil {
+			imageMsg = msg
+		} else if msg.RelatesTo != nil && msg.RelatesTo.InReplyTo != nil {
+			// This is a reply, fetch the original message
+			originalEvent, err := matrixClient.GetEvent(ctx, ev.RoomID, msg.RelatesTo.InReplyTo.EventID)
+			if err != nil {
+				return "", fmt.Errorf("failed to fetch replied-to message: %w", err)
+			}
+
+			// Parse the original event content
+			if originalEvent.Content.Raw != nil {
+				if err := originalEvent.Content.ParseRaw(originalEvent.Type); err != nil {
+					return "", fmt.Errorf("failed to parse original event: %w", err)
+				}
+			}
+
+			// Decrypt if encrypted
+			if originalEvent.Type == event.EventEncrypted && matrixClient.Crypto != nil {
+				log.Debug().Str("event_id", string(originalEvent.ID)).Msg("decrypting replied-to encrypted event")
+				decryptedEvent, err := matrixClient.Crypto.Decrypt(ctx, originalEvent)
+				if err != nil {
+					return "", fmt.Errorf("failed to decrypt replied-to message: %w", err)
+				}
+				originalEvent = decryptedEvent
+			}
+
+			originalMsg := originalEvent.Content.AsMessage()
+			if originalMsg != nil && (originalMsg.MsgType == event.MsgImage || originalMsg.MsgType == "m.sticker" || originalMsg.URL != "" || originalMsg.File != nil) {
+				imageMsg = originalMsg
+			}
+		}
+
+		if imageMsg == nil {
+			return "", fmt.Errorf("no image found")
+		}
+
+		// Get media URL
+		var mediaURL id.ContentURIString
+		var encryptedFile *event.EncryptedFileInfo
+
+		if imageMsg.File != nil {
+			mediaURL = imageMsg.File.URL
+			encryptedFile = imageMsg.File
+		} else if imageMsg.URL != "" {
+			mediaURL = imageMsg.URL
+		} else {
+			return "", fmt.Errorf("no media URL")
+		}
+
+		// Download image
+		var data []byte
+		var err error
+
+		if mediaURL != "" {
+			parsedURL, err := id.ParseContentURI(string(mediaURL))
+			if err != nil {
+				return "", fmt.Errorf("failed to parse media URL: %w", err)
+			}
+			data, err = matrixClient.DownloadBytes(ctx, parsedURL)
+			if err != nil {
+				return "", fmt.Errorf("failed to download image: %w", err)
+			}
+
+			if encryptedFile != nil {
+				err = encryptedFile.PrepareForDecryption()
+				if err != nil {
+					return "", fmt.Errorf("failed to prepare for decryption: %w", err)
+				}
+				data, err = encryptedFile.Decrypt(data)
+				if err != nil {
+					return "", fmt.Errorf("failed to decrypt image: %w", err)
+				}
+			}
+		}
+
+		// Create temp input file
+		tmpDir := "data/tmp"
+		os.MkdirAll(tmpDir, 0755)
+		inputFile, err := os.CreateTemp(tmpDir, "exec_input_*.tmp")
+		if err != nil {
+			return "", fmt.Errorf("failed to create temp input file: %w", err)
+		}
+
+		if _, err := inputFile.Write(data); err != nil {
+			return "", fmt.Errorf("failed to write image data: %w", err)
+		}
+		inputFile.Close()
+
+		// Detect file type and rename
+		fileCmd := exec.Command("file", inputFile.Name())
+		fileOutput, err := fileCmd.Output()
+		if err == nil {
+			typeStr := strings.ToLower(strings.TrimSpace(string(fileOutput)))
+			var ext string
+			if strings.Contains(typeStr, "jpeg") || strings.Contains(typeStr, "jpg") {
+				ext = ".jpg"
+			} else if strings.Contains(typeStr, "png") {
+				ext = ".png"
+			} else if strings.Contains(typeStr, "webp") {
+				ext = ".webp"
+			} else {
+				ext = ".png"
+			}
+			newName := strings.TrimSuffix(inputFile.Name(), ".tmp") + ext
+			os.Rename(inputFile.Name(), newName)
+			inputPath = newName
+		} else {
+			inputPath = inputFile.Name()
+		}
+	}
+
+	// Prepare args, replace placeholders
+	args := make([]string, len(c.Args))
+	var outputPath string
+	for i, arg := range c.Args {
+		if arg == "{input}" {
+			args[i] = inputPath
+		} else if arg == "{output}" {
+			outputFile, err := os.CreateTemp("data/tmp", "exec_output_*")
+			if err != nil {
+				return "", fmt.Errorf("failed to create output file: %w", err)
+			}
+			outputPath = outputFile.Name()
+			args[i] = outputPath
+			outputFile.Close()
+		} else {
+			args[i] = arg
+		}
+	}
+
+	// Run command
+	cmd := exec.Command(c.Command, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("exec command failed: %w, stderr: %s", err, stderr.String())
+	}
+
+	// Handle output
+	if c.OutputType == "image" {
+		// Read and upload the output file
+		processedData, err := os.ReadFile(outputPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to read processed image: %w", err)
+		}
+
+		uploadResp, err := matrixClient.UploadBytes(ctx, processedData, "image/jpeg")
+		if err != nil {
+			return "", fmt.Errorf("failed to upload processed image: %w", err)
+		}
+
+		imageContent := event.MessageEventContent{
+			MsgType:   event.MsgImage,
+			Body:      "processed.jpg",
+			URL:       uploadResp.ContentURI.CUString(),
+			RelatesTo: &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: ev.ID}},
+		}
+
+		_, err = matrixClient.SendMessageEvent(ctx, ev.RoomID, event.EventMessage, &imageContent)
+		if err != nil {
+			return "", fmt.Errorf("failed to send processed image: %w", err)
+		}
+
+		return "Image processed!", nil
+	} else {
+		return strings.TrimSpace(stdout.String()), nil
+	}
+}
+
+// handleAiCommand handles AI-based commands using Groq
+func handleAiCommand(ctx context.Context, ev *event.Event, matrixClient *mautrix.Client, c *BotCommand, groqAPIKey string) (string, error) {
+	var targetText string
+
+	if strings.Contains(c.Prompt, "articles") {
+		// Special for summary: fetch articles from linkstash
+		url := "https://linkstash.hsp-ec.xyz/api/summary"
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return "", err
+		}
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("unexpected status: %d", resp.StatusCode)
+		}
+		var data struct {
+			Summary []struct {
+				ID    string `json:"id"`
+				Title string `json:"title"`
+				URL   string `json:"url"`
+			} `json:"summary"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+			return "", err
+		}
+
+		if len(data.Summary) == 0 {
+			return "No articles to summarize.", nil
+		}
+
+		// Fetch content for each article
+		var contents []string
+		for _, article := range data.Summary {
+			contentURL := fmt.Sprintf("https://linkstash.hsp-ec.xyz/api/content/%s", article.ID)
+			req, err := http.NewRequestWithContext(ctx, "GET", contentURL, nil)
+			if err != nil {
+				log.Warn().Err(err).Str("id", article.ID).Msg("failed to create request for content")
+				continue
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				log.Warn().Err(err).Str("id", article.ID).Msg("failed to fetch content")
+				continue
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				log.Warn().Err(err).Str("id", article.ID).Msg("failed to read content")
+				continue
+			}
+			if resp.StatusCode != http.StatusOK {
+				log.Warn().Int("status", resp.StatusCode).Str("id", article.ID).Msg("bad status for content")
+				continue
+			}
+			contents = append(contents, string(body))
+		}
+
+		if len(contents) == 0 {
+			return "Failed to fetch any article contents.", nil
+		}
+
+		// Combine all contents
+		targetText = strings.Join(contents, "\n\n---\n\n")
+
+		// Estimate tokens and truncate if necessary
+		estimatedTokens := len(targetText) / 4
+		tokenLimit := 6000
+		if estimatedTokens > tokenLimit {
+			maxChars := tokenLimit * 4
+			if len(targetText) > maxChars {
+				targetText = targetText[:maxChars]
+				if lastNewline := strings.LastIndex(targetText, "\n"); lastNewline > maxChars/2 {
+					targetText = targetText[:lastNewline]
+				}
+			}
+		}
+	} else {
+		// For gork: use message text
+		if ev.Content.Raw != nil {
+			if err := ev.Content.ParseRaw(ev.Type); err != nil {
+				if !strings.Contains(err.Error(), "already parsed") {
+					return "", fmt.Errorf("failed to parse event: %w", err)
+				}
+			}
+		}
+
+		msg := ev.Content.AsMessage()
+		if msg == nil {
+			return "", fmt.Errorf("not a message event")
+		}
+
+		messageText := msg.Body
+		if messageText == "" {
+			return "No message to respond to.", nil
+		}
+
+		// Remove the command prefix
+		targetText = strings.TrimSpace(strings.TrimPrefix(messageText, "/bot "+strings.Split(ev.Content.AsMessage().Body, " ")[0]))
+
+		// Estimate tokens and truncate if necessary
+		estimatedTokens := len(targetText) / 4
+		tokenLimit := 2000
+		if estimatedTokens > tokenLimit {
+			maxChars := tokenLimit * 4
+			targetText = targetText[:maxChars]
+			if lastSpace := strings.LastIndex(targetText, " "); lastSpace > maxChars/2 {
+				targetText = targetText[:lastSpace]
+			}
+		}
+	}
+
+	// Prepare prompt
+	prompt := c.Prompt + "\n\n" + targetText
+
+	// Use Groq API
+	if groqAPIKey == "" {
+		return "", fmt.Errorf("GROQ_API_KEY not set")
+	}
+
+	config := openai.DefaultConfig(groqAPIKey)
+	config.BaseURL = "https://api.groq.com/openai/v1"
+	groqClient := openai.NewClientWithConfig(config)
+
+	model := c.Model
+	if model == "" {
+		model = "openai/gpt-oss-120b"
+	}
+
+	maxTokens := c.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = 300
+	}
+
+	groqResp, err := groqClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+		Model: model,
+		Messages: []openai.ChatCompletionMessage{
+			{Role: "user", Content: prompt},
+		},
+		MaxTokens: maxTokens,
+	})
+	if err != nil {
+		return "", fmt.Errorf("groq api: %w", err)
+	}
+
+	if len(groqResp.Choices) == 0 {
+		return "", fmt.Errorf("no response from groq")
+	}
+
+	return groqResp.Choices[0].Message.Content, nil
 }
 
 // Very small helper to extract keys separated by '.' from a parsed JSON value.
@@ -387,14 +778,11 @@ func handleDeepfryCommand(ctx context.Context, ev *event.Event, matrixClient *ma
 		imagemagickArgs = []string{"-modulate", "100,200,100", "-contrast-stretch", "0", "-statistic", "NonPeak", "3", "-sharpen", "0x5"}
 	}
 
-	var execCmd *exec.Cmd
-	var stderr bytes.Buffer
-
 	// Apply deepfry effects using ImageMagick
 	args := append([]string{inputPath}, imagemagickArgs...)
 	args = append(args, outputFile.Name())
-	execCmd = exec.Command("convert", args...)
-	stderr.Reset()
+	var stderr bytes.Buffer
+	execCmd := exec.Command("convert", args...)
 	execCmd.Stderr = &stderr
 
 	if err := execCmd.Run(); err != nil {
@@ -439,11 +827,15 @@ func handleQuackCommand(ctx context.Context, ev *event.Event, matrixClient *maut
 			}
 		}()
 
-		url := "https://random-d.uk/api/random" // default
+		var url string
 		if cmd.Params != nil {
 			if u, ok := cmd.Params["url"].(string); ok {
 				url = u
 			}
+		}
+		if url == "" {
+			log.Warn().Msg("no URL configured for quack command")
+			return
 		}
 		// Fetch random duck image URL from API
 		req, err := http.NewRequestWithContext(context.Background(), "GET", url, nil)
@@ -545,11 +937,15 @@ func handleMeowCommand(ctx context.Context, ev *event.Event, matrixClient *mautr
 			}
 		}()
 
-		url := "https://api.thecatapi.com/v1/images/search" // default
+		var url string
 		if cmd.Params != nil {
 			if u, ok := cmd.Params["url"].(string); ok {
 				url = u
 			}
+		}
+		if url == "" {
+			log.Warn().Msg("no URL configured for meow command")
+			return
 		}
 		// Fetch random cat image from The Cat API
 		req, err := http.NewRequestWithContext(context.Background(), "GET", url, nil)
@@ -646,7 +1042,7 @@ func handleMeowCommand(ctx context.Context, ev *event.Event, matrixClient *mautr
 
 // handleJokeCommand fetches a random joke from configured API
 func handleJokeCommand(ctx context.Context, cmd *BotCommand) (string, error) {
-	url := "https://icanhazdadjoke.com/" // default
+	var url string
 	headers := map[string]string{"Accept": "application/json"}
 	if cmd.Params != nil {
 		if u, ok := cmd.Params["url"].(string); ok {
@@ -659,6 +1055,9 @@ func handleJokeCommand(ctx context.Context, cmd *BotCommand) (string, error) {
 				}
 			}
 		}
+	}
+	if url == "" {
+		return "", fmt.Errorf("no URL configured for joke command")
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
