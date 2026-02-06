@@ -2,10 +2,6 @@
 
 > a minimal [matrix] message watcher and link extractor
 
-# ash
-
-> a minimal [matrix] message watcher and link extractor
-
 ## Bot commands (bot.json)
 
 You can configure bot commands in `bot.json`. Commands are fully composable and support three types:
