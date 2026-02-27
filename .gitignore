@@ -1,6 +1,6 @@
 data
 .env
-ash
 config.json
 ash-linux-amd64
 .DS_Store
+ash-macos-arm64

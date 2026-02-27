@@ -23,7 +23,7 @@ COPY . .
 
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    go build -v -o ash .
+    go build -v -o ash ./cmd/ash
 
 # ---- runtime image ----
 FROM ubuntu:latest

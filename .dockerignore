@@ -1,6 +1,6 @@
 .git
 .gitignore
-ash
+/ash
 node_modules
 tmp
 *.log
