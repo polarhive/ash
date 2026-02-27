@@ -78,6 +78,7 @@ var KnockKnockJokes = []KnockKnockJoke{
 	{"Nobel", "Nobel, that's why I knocked!"},
 	{"Cow says", "No, a cow says moo!"},
 	{"Interrupting cow", "MOO!"},
+	{"Who", "‼️ That's the sound of da police ‼️"},
 	{"Boo", "Don't cry, it's just a joke!"},
 	{"Tank", "You're welcome!"},
 	{"Broken pencil", "Never mind, it's pointless."},
