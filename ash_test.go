@@ -262,7 +262,7 @@ func TestLoadBotConfig(t *testing.T) {
 			continue
 		}
 		switch cmd.Type {
-		case "http", "exec", "ai":
+		case "http", "exec", "ai", "builtin":
 		default:
 			t.Errorf("command %q has invalid type %q", name, cmd.Type)
 		}
@@ -412,8 +412,8 @@ func TestQueryTopYappers(t *testing.T) {
 	if !strings.Contains(result, "alice") {
 		t.Errorf("expected alice in result, got: %s", result)
 	}
-	if !strings.Contains(result, "5 msgs") {
-		t.Errorf("expected '5 msgs' for alice, got: %s", result)
+	if !strings.Contains(result, "10 words") {
+		t.Errorf("expected '10 words' for alice, got: %s", result)
 	}
 	if !strings.Contains(result, "bob") {
 		t.Errorf("expected bob in result, got: %s", result)
@@ -443,5 +443,89 @@ func TestQueryTopYappers(t *testing.T) {
 	}
 	if strings.Contains(result, "other") {
 		t.Errorf("messages from other rooms should be excluded, got: %s", result)
+	}
+}
+
+func TestQueryYapGuess(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS messages (
+		id TEXT PRIMARY KEY,
+		room_id TEXT,
+		sender TEXT,
+		ts_ms INTEGER,
+		body TEXT,
+		msgtype TEXT,
+		raw_json TEXT
+	)`)
+	if err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	room := "!testroom:example.com"
+
+	// alice=10 words (rank 1), bob=6 words (rank 2), carol=1 word (rank 3)
+	for i := 0; i < 5; i++ {
+		_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+			fmt.Sprintf("alice-%d", i), room, "@alice:example.com", now-int64(i*1000), fmt.Sprintf("hello %d", i), "m.text")
+	}
+	for i := 0; i < 3; i++ {
+		_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+			fmt.Sprintf("bob-%d", i), room, "@bob:example.com", now-int64(i*1000), fmt.Sprintf("hey %d", i), "m.text")
+	}
+	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+		"carol-0", room, "@carol:example.com", now, "sup", "m.text")
+
+	ctx := context.Background()
+
+	// Bob guesses rank 1 but is actually rank 2.
+	ev := &event.Event{
+		RoomID: id.RoomID(room),
+	}
+	ev.Sender = "@bob:example.com"
+	result, err := queryTopYappers(ctx, db, nil, ev, "guess 1", "", false)
+	if err != nil {
+		t.Fatalf("queryYapGuess: %v", err)
+	}
+	if !strings.Contains(result, "guessed #1") || !strings.Contains(result, "actually #2") {
+		t.Errorf("expected bob at #2 with guess #1, got: %s", result)
+	}
+	if !strings.Contains(result, "1 position(s) higher") {
+		t.Errorf("expected 'higher than you thought', got: %s", result)
+	}
+
+	// Alice guesses rank 1 — exactly right.
+	ev.Sender = "@alice:example.com"
+	result, err = queryTopYappers(ctx, db, nil, ev, "guess 1", "", false)
+	if err != nil {
+		t.Fatalf("queryYapGuess exact: %v", err)
+	}
+	if !strings.Contains(result, "exactly right") {
+		t.Errorf("expected exact match for alice guessing #1, got: %s", result)
+	}
+
+	// Carol guesses rank 1 but is actually rank 3.
+	ev.Sender = "@carol:example.com"
+	result, err = queryTopYappers(ctx, db, nil, ev, "guess 1", "", false)
+	if err != nil {
+		t.Fatalf("queryYapGuess carol: %v", err)
+	}
+	if !strings.Contains(result, "guessed #1") || !strings.Contains(result, "actually #3") {
+		t.Errorf("expected carol at #3, got: %s", result)
+	}
+
+	// Unknown sender has no messages.
+	ev.Sender = "@nobody:example.com"
+	result, err = queryTopYappers(ctx, db, nil, ev, "guess 1", "", false)
+	if err != nil {
+		t.Fatalf("queryYapGuess nobody: %v", err)
+	}
+	if !strings.Contains(result, "no messages") {
+		t.Errorf("expected no messages for unknown sender, got: %s", result)
 	}
 }

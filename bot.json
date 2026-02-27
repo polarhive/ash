@@ -60,6 +60,58 @@
             "input_type": "image",
             "output_type": "image"
         },
+        "chipmunk": {
+            "type": "exec",
+            "command": "convert",
+            "args": [
+                "{input}",
+                "-resize",
+                "60x140%",
+                "-gravity",
+                "center",
+                "-extent",
+                "100%x100%",
+                "{output}"
+            ],
+            "input_type": "image",
+            "output_type": "image"
+        },
+        "swirl": {
+            "type": "exec",
+            "command": "convert",
+            "args": [
+                "{input}",
+                "-swirl",
+                "180",
+                "{output}"
+            ],
+            "input_type": "image",
+            "output_type": "image"
+        },
+        "implode": {
+            "type": "exec",
+            "command": "convert",
+            "args": [
+                "{input}",
+                "-implode",
+                "0.7",
+                "{output}"
+            ],
+            "input_type": "image",
+            "output_type": "image"
+        },
+        "explode": {
+            "type": "exec",
+            "command": "convert",
+            "args": [
+                "{input}",
+                "-implode",
+                "-0.7",
+                "{output}"
+            ],
+            "input_type": "image",
+            "output_type": "image"
+        },
         "gork": {
             "type": "ai",
             "model": "openai/gpt-oss-120b",
@@ -79,7 +131,13 @@
             "command": "yap",
             "input_type": "text",
             "output_type": "text",
-            "mention": true
+            "mention": false
+        },
+        "knockknock": {
+            "type": "builtin",
+            "command": "knockknock",
+            "input_type": "text",
+            "output_type": "text"
         }
     }
 }

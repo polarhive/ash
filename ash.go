@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	grand "math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -560,6 +561,7 @@ type App struct {
 	BotCfg     *BotConfig
 	Client     *mautrix.Client
 	ReadyChan  <-chan bool
+	KnockKnock *KnockKnockState
 }
 
 // resolveReplyLabel returns the reply label with precedence:
@@ -613,6 +615,14 @@ func (app *App) handleMessage(evCtx context.Context, ev *event.Event) {
 	if app.Cfg.BotReplyLabel != "" && strings.Contains(msgData.Msg.Body, app.Cfg.BotReplyLabel) {
 		log.Debug().Str("label", app.Cfg.BotReplyLabel).Msg("skipped bot processing due to bot reply label")
 		return
+	}
+
+	// Check for knock-knock joke reply continuations.
+	if app.KnockKnock != nil && msgData.Msg.RelatesTo != nil && msgData.Msg.RelatesTo.InReplyTo != nil {
+		if step, ok := app.KnockKnock.Get(msgData.Msg.RelatesTo.InReplyTo.EventID); ok {
+			go app.handleKnockKnockReply(evCtx, ev, step, msgData.Msg.RelatesTo.InReplyTo.EventID)
+			return
+		}
 	}
 
 	// Handle bot commands.
@@ -681,6 +691,12 @@ func (app *App) dispatchBotCommand(evCtx context.Context, ev *event.Event, msgDa
 		return
 	}
 
+	// Handle knockknock specially since it needs conversational state.
+	if cmdCfg.Type == "builtin" && cmdCfg.Command == "knockknock" {
+		go app.startKnockKnock(evCtx, ev, label)
+		return
+	}
+
 	// Run the command in a goroutine to avoid blocking other messages.
 	go func() {
 		resp, err := FetchBotCommand(evCtx, &cmdCfg, app.Cfg.LinkstashURL, ev, app.Client, app.Cfg.GroqAPIKey, label, app.MessagesDB)
@@ -695,6 +711,69 @@ func (app *App) dispatchBotCommand(evCtx context.Context, ev *event.Event, msgDa
 		}
 		sendBotReply(evCtx, app.Client, ev.RoomID, ev.ID, label+body, cmd)
 	}()
+}
+
+// startKnockKnock begins a knock-knock joke conversation.
+func (app *App) startKnockKnock(ctx context.Context, ev *event.Event, label string) {
+	joke := knockKnockJokes[grand.Intn(len(knockKnockJokes))]
+
+	body := label + "Knock knock! (reply to this message)"
+	content := event.MessageEventContent{
+		MsgType:   event.MsgText,
+		Body:      body,
+		RelatesTo: &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: ev.ID}},
+	}
+	resp, err := app.Client.SendMessageEvent(ctx, ev.RoomID, event.EventMessage, &content)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to send knock knock opener")
+		return
+	}
+
+	app.KnockKnock.Set(resp.EventID, &knockKnockStep{
+		Joke:  joke,
+		Step:  0,
+		Label: label,
+	})
+
+	// Clean up after 5 minutes if no reply.
+	go func() {
+		time.Sleep(5 * time.Minute)
+		app.KnockKnock.Delete(resp.EventID)
+	}()
+}
+
+// handleKnockKnockReply continues a knock-knock joke conversation.
+func (app *App) handleKnockKnockReply(ctx context.Context, ev *event.Event, step *knockKnockStep, origEventID id.EventID) {
+	app.KnockKnock.Delete(origEventID)
+
+	if step.Step == 0 {
+		// User replied to "Knock knock!" — send the name.
+		body := fmt.Sprintf("%s%s (reply to this message)", step.Label, step.Joke.Name)
+		content := event.MessageEventContent{
+			MsgType:   event.MsgText,
+			Body:      body,
+			RelatesTo: &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: ev.ID}},
+		}
+		resp, err := app.Client.SendMessageEvent(ctx, ev.RoomID, event.EventMessage, &content)
+		if err != nil {
+			log.Error().Err(err).Msg("failed to send knock knock name")
+			return
+		}
+		app.KnockKnock.Set(resp.EventID, &knockKnockStep{
+			Joke:  step.Joke,
+			Step:  1,
+			Label: step.Label,
+		})
+		// Clean up after 5 minutes.
+		go func() {
+			time.Sleep(5 * time.Minute)
+			app.KnockKnock.Delete(resp.EventID)
+		}()
+	} else {
+		// User replied to the name — send the punchline!
+		body := step.Label + step.Joke.Punchline
+		sendBotReply(ctx, app.Client, ev.RoomID, ev.ID, body, "knockknock")
+	}
 }
 
 // processLinks handles link extraction, hooks, and snapshot exports.
@@ -822,6 +901,7 @@ func run(ctx context.Context, metaDB *sql.DB, messagesDB *sql.DB, cfg *Config) e
 		BotCfg:     botCfg,
 		Client:     client,
 		ReadyChan:  readyChan,
+		KnockKnock: NewKnockKnockState(),
 	}
 	syncer.OnEventType(event.EventMessage, app.handleMessage)
 
