@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +41,7 @@ type BotCommand struct {
 	Prompt       string                 `json:"prompt,omitempty"`        // for ai
 	Response     string                 `json:"response,omitempty"`      // static response
 	Params       map[string]interface{} `json:"params,omitempty"`
+	Mention      bool                   `json:"mention,omitempty"` // tag users in output
 }
 
 // BotConfig is the structure of bot.json.
@@ -279,7 +283,7 @@ func downloadExternalImage(url string) ([]byte, string, error) {
 // ---------------------------------------------------------------------------
 
 // FetchBotCommand executes the configured command and returns a string to post.
-func FetchBotCommand(ctx context.Context, c *BotCommand, linkstashURL string, ev *event.Event, matrixClient *mautrix.Client, groqAPIKey string, replyLabel string) (string, error) {
+func FetchBotCommand(ctx context.Context, c *BotCommand, linkstashURL string, ev *event.Event, matrixClient *mautrix.Client, groqAPIKey string, replyLabel string, messagesDB *sql.DB) (string, error) {
 	if c.Response != "" {
 		return c.Response, nil
 	}
@@ -290,6 +294,8 @@ func FetchBotCommand(ctx context.Context, c *BotCommand, linkstashURL string, ev
 		return handleExecCommand(ctx, ev, matrixClient, c)
 	case "ai":
 		return handleAiCommand(ctx, ev, matrixClient, c, groqAPIKey, replyLabel)
+	case "builtin":
+		return handleBuiltinCommand(ctx, ev, matrixClient, c, messagesDB, replyLabel)
 	default:
 		return "", fmt.Errorf("unknown command type: %s", c.Type)
 	}
@@ -535,6 +541,250 @@ func handleAiCommand(ctx context.Context, ev *event.Event, matrixClient *mautrix
 		return "", nil
 	}
 	return response, nil
+}
+
+// ---------------------------------------------------------------------------
+// Builtin text-transform commands
+// ---------------------------------------------------------------------------
+
+// handleBuiltinCommand handles built-in text transformation and query commands.
+func handleBuiltinCommand(ctx context.Context, ev *event.Event, matrixClient *mautrix.Client, c *BotCommand, messagesDB *sql.DB, replyLabel string) (string, error) {
+	// Check for DB-backed builtins first.
+	if dbFn, ok := builtinDBFuncs[c.Command]; ok {
+		parseEvent(ev)
+		msg := ev.Content.AsMessage()
+		if msg == nil {
+			return "", fmt.Errorf("not a message event")
+		}
+		// Extract inline args after "/bot <cmd>".
+		var args string
+		parts := strings.Fields(msg.Body)
+		if len(parts) > 2 {
+			args = strings.TrimSpace(strings.Join(parts[2:], " "))
+		}
+		return dbFn(ctx, messagesDB, matrixClient, ev, args, replyLabel, c.Mention)
+	}
+
+	// Text-transform builtins.
+	parseEvent(ev)
+	msg := ev.Content.AsMessage()
+	if msg == nil {
+		return "", fmt.Errorf("not a message event")
+	}
+
+	var targetText string
+
+	// Check if replying to another message.
+	if msg.RelatesTo != nil && msg.RelatesTo.InReplyTo != nil {
+		original, err := fetchAndDecrypt(ctx, matrixClient, ev.RoomID, msg.RelatesTo.InReplyTo.EventID)
+		if err == nil {
+			if om := original.Content.AsMessage(); om != nil {
+				targetText = om.Body
+			}
+		}
+	}
+
+	// If no replied-to text, use the inline text after the command.
+	if targetText == "" {
+		parts := strings.Fields(msg.Body)
+		if len(parts) > 2 {
+			targetText = strings.TrimSpace(strings.Join(parts[2:], " "))
+		}
+	}
+
+	if targetText == "" {
+		return "uwu~ pwease give me some text to twansfowm!", nil
+	}
+
+	// Dispatch to the appropriate builtin function.
+	fn, ok := builtinFuncs[c.Command]
+	if !ok {
+		return "", fmt.Errorf("unknown builtin: %s", c.Command)
+	}
+	return fn(targetText), nil
+}
+
+// builtinFuncs maps builtin command names to their Go functions.
+var builtinFuncs = map[string]func(string) string{
+	"uwuify": uwuify,
+}
+
+// builtinDBFuncs maps builtin command names that need DB access.
+var builtinDBFuncs = map[string]func(context.Context, *sql.DB, *mautrix.Client, *event.Event, string, string, bool) (string, error){
+	"yap": queryTopYappers,
+}
+
+// queryTopYappers returns the top N message senders in the last 24h for the
+// current room, excluding messages that start with the bot label (e.g. [BOT]).
+// It sends its own HTML-formatted message with user mention pills and returns
+// "", nil so the caller does not send a duplicate.
+func queryTopYappers(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client, ev *event.Event, args string, replyLabel string, mention bool) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("no database available")
+	}
+
+	limit := 5
+	if args != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(args)); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	roomID := string(ev.RoomID)
+	cutoff := time.Now().Add(-24 * time.Hour).UnixMilli()
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT sender, COUNT(*) as msg_count
+		FROM messages
+		WHERE room_id = ?
+		  AND ts_ms >= ?
+		  AND body NOT LIKE '[BOT]%'
+		  AND body NOT LIKE '/bot %'
+		  AND msgtype = 'm.text'
+		GROUP BY sender
+		ORDER BY msg_count DESC
+		LIMIT ?
+	`, roomID, cutoff, limit)
+	if err != nil {
+		return "", fmt.Errorf("query yappers: %w", err)
+	}
+	defer rows.Close()
+
+	// Pre-fetch room members for display name resolution.
+	displayNames := make(map[string]string)
+	if matrixClient != nil {
+		if resp, err := matrixClient.JoinedMembers(ctx, ev.RoomID); err == nil {
+			for uid, member := range resp.Joined {
+				if member.DisplayName != "" {
+					displayNames[string(uid)] = member.DisplayName
+				}
+			}
+		}
+	}
+
+	type yapEntry struct {
+		senderID string
+		display  string
+		count    int
+	}
+	var entries []yapEntry
+	for rows.Next() {
+		var sender string
+		var count int
+		if err := rows.Scan(&sender, &count); err != nil {
+			continue
+		}
+		display := sender
+		if dn, ok := displayNames[sender]; ok {
+			display = dn
+		} else if strings.HasPrefix(sender, "@") {
+			if idx := strings.Index(sender, ":"); idx > 0 {
+				display = sender[1:idx]
+			}
+		}
+		entries = append(entries, yapEntry{senderID: sender, display: display, count: count})
+	}
+
+	if len(entries) == 0 {
+		return "no messages found in the last 24h", nil
+	}
+
+	// Build plain text and HTML versions.
+	var plain, html strings.Builder
+	plain.WriteString(replyLabel + "top yappers (last 24h):\n")
+	html.WriteString(replyLabel + "top yappers (last 24h):<br>")
+	for i, e := range entries {
+		plain.WriteString(fmt.Sprintf("%d. %s \u2014 %d msgs\n", i+1, e.display, e.count))
+		if mention {
+			// Matrix user mention pill: <a href="https://matrix.to/#/@user:server">Display</a>
+			html.WriteString(fmt.Sprintf("%d. <a href=\"https://matrix.to/#/%s\">%s</a> \u2014 %d msgs<br>", i+1, e.senderID, e.display, e.count))
+		} else {
+			html.WriteString(fmt.Sprintf("%d. %s \u2014 %d msgs<br>", i+1, e.display, e.count))
+		}
+	}
+
+	// Send the formatted message directly (like image commands).
+	if matrixClient != nil {
+		content := event.MessageEventContent{
+			MsgType:       event.MsgText,
+			Body:          strings.TrimSpace(plain.String()),
+			Format:        event.FormatHTML,
+			FormattedBody: strings.TrimSuffix(html.String(), "<br>"),
+			RelatesTo:     &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: ev.ID}},
+		}
+		if _, err := matrixClient.SendMessageEvent(ctx, ev.RoomID, event.EventMessage, &content); err != nil {
+			return "", fmt.Errorf("send yap reply: %w", err)
+		}
+		return "", nil // Message already sent.
+	}
+
+	// Fallback for tests or when no client is available.
+	return strings.TrimSpace(plain.String()), nil
+}
+
+// uwuify transforms text into uwu-speak.
+func uwuify(text string) string {
+	replacements := []struct{ old, new string }{
+		{"small", "smol"},
+		{"cute", "kawaii"},
+		{"love", "wuv"},
+		{"Love", "Wuv"},
+		{"LOVE", "WUV"},
+		{"this", "dis"},
+		{"This", "Dis"},
+		{"the ", "da "},
+		{"The ", "Da "},
+		{"have", "haz"},
+		{"ove", "uv"},
+		{"th", "d"},
+		{"Th", "D"},
+	}
+
+	result := text
+	for _, r := range replacements {
+		result = strings.ReplaceAll(result, r.old, r.new)
+	}
+
+	// Character-level replacements.
+	var buf strings.Builder
+	buf.Grow(len(result))
+	for i := 0; i < len(result); i++ {
+		c := result[i]
+		switch c {
+		case 'r', 'l':
+			buf.WriteByte('w')
+		case 'R', 'L':
+			buf.WriteByte('W')
+		default:
+			buf.WriteByte(c)
+		}
+	}
+	result = buf.String()
+
+	// Add stutter to some words (first word that starts with a letter).
+	words := strings.Fields(result)
+	if len(words) > 0 {
+		for i, w := range words {
+			if len(w) > 1 && i%4 == 0 {
+				first := strings.ToLower(string(w[0]))
+				if first >= "a" && first <= "z" {
+					words[i] = string(w[0]) + "-" + w
+				}
+			}
+		}
+		result = strings.Join(words, " ")
+	}
+
+	// Append a random kaomoji.
+	faces := []string{" uwu", " owo", " >w<", " ^w^", " (◕ᴗ◕✿)", " ✧w✧", " ~nyaa"}
+	b := make([]byte, 1)
+	_, _ = rand.Read(b)
+	result += faces[int(b[0])%len(faces)]
+
+	return result
 }
 
 // ---------------------------------------------------------------------------

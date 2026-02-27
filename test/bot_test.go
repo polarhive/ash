@@ -63,9 +63,10 @@ func validateCommand(t *testing.T, name string, cmd BotCommand) {
 
 	// Check that type is specified and valid
 	validTypes := map[string]bool{
-		"http": true,
-		"exec": true,
-		"ai":   true,
+		"http":    true,
+		"exec":    true,
+		"ai":      true,
+		"builtin": true,
 	}
 
 	if cmd.Type == "" {
@@ -74,7 +75,7 @@ func validateCommand(t *testing.T, name string, cmd BotCommand) {
 	}
 
 	if !validTypes[cmd.Type] {
-		t.Errorf("Command %s: invalid type '%s', must be one of: http, exec, ai", name, cmd.Type)
+		t.Errorf("Command %s: invalid type '%s', must be one of: http, exec, ai, builtin", name, cmd.Type)
 		return
 	}
 
@@ -86,6 +87,8 @@ func validateCommand(t *testing.T, name string, cmd BotCommand) {
 		validateExecCommand(t, name, cmd)
 	case "ai":
 		validateAiCommand(t, name, cmd)
+	case "builtin":
+		validateBuiltinCommand(t, name, cmd)
 	}
 
 	// Validate input/output types if specified
@@ -187,6 +190,12 @@ func validateAiCommand(t *testing.T, name string, cmd BotCommand) {
 
 	if cmd.OutputType == "" {
 		cmd.OutputType = "text" // Default for AI
+	}
+}
+
+func validateBuiltinCommand(t *testing.T, name string, cmd BotCommand) {
+	if cmd.Command == "" {
+		t.Errorf("Command %s: builtin type requires command", name)
 	}
 }
 

@@ -1,7 +1,16 @@
 package main
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3"
+	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 )
 
 func TestExtractLinks(t *testing.T) {
@@ -288,4 +297,151 @@ func splitLines(s string) []string {
 		lines = append(lines, s[start:])
 	}
 	return lines
+}
+
+func TestUwuify(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		check func(string) bool
+		desc  string
+	}{
+		{
+			"replaces r/l with w",
+			"really cool",
+			func(s string) bool { return strings.Contains(s, "w") },
+			"should replace r and l with w",
+		},
+		{
+			"replaces th with d",
+			"the weather",
+			func(s string) bool { return strings.Contains(s, "da") && strings.Contains(s, "wead") },
+			"should replace 'the ' with 'da ' and 'th' with 'd'",
+		},
+		{
+			"replaces love with wuv",
+			"I love you",
+			func(s string) bool { return strings.Contains(s, "wuv") },
+			"should replace love with wuv",
+		},
+		{
+			"appends kaomoji",
+			"hello world",
+			func(s string) bool {
+				faces := []string{"uwu", "owo", ">w<", "^w^", "◕ᴗ◕✿", "✧w✧", "~nyaa"}
+				for _, f := range faces {
+					if strings.HasSuffix(s, f) {
+						return true
+					}
+				}
+				return false
+			},
+			"should end with a kaomoji",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := uwuify(tt.input)
+			if !tt.check(got) {
+				t.Errorf("uwuify(%q) = %q: %s", tt.input, got, tt.desc)
+			}
+		})
+	}
+}
+
+func TestQueryTopYappers(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS messages (
+		id TEXT PRIMARY KEY,
+		room_id TEXT,
+		sender TEXT,
+		ts_ms INTEGER,
+		body TEXT,
+		msgtype TEXT,
+		raw_json TEXT
+	)`)
+	if err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	room := "!testroom:example.com"
+
+	// Insert test messages: alice=5, bob=3, carol=1, plus some bot messages that should be excluded.
+	for i := 0; i < 5; i++ {
+		_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+			fmt.Sprintf("alice-%d", i), room, "@alice:example.com", now-int64(i*1000), fmt.Sprintf("hello %d", i), "m.text")
+	}
+	for i := 0; i < 3; i++ {
+		_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+			fmt.Sprintf("bob-%d", i), room, "@bob:example.com", now-int64(i*1000), fmt.Sprintf("hey %d", i), "m.text")
+	}
+	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+		"carol-0", room, "@carol:example.com", now, "sup", "m.text")
+
+	// Bot messages — should be excluded.
+	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+		"bot-1", room, "@bot:example.com", now, "[BOT] hello", "m.text")
+	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+		"bot-2", room, "@bot:example.com", now, "/bot help", "m.text")
+
+	// Old message — should be excluded (>24h ago).
+	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+		"old-1", room, "@old:example.com", now-100000000, "ancient msg", "m.text")
+
+	// Different room — should be excluded.
+	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+		"other-1", "!otherroom:example.com", "@other:example.com", now, "wrong room", "m.text")
+
+	ev := &event.Event{
+		RoomID: id.RoomID(room),
+	}
+
+	ctx := context.Background()
+
+	// Test default (top 5).
+	result, err := queryTopYappers(ctx, db, nil, ev, "", "", false)
+	if err != nil {
+		t.Fatalf("queryTopYappers: %v", err)
+	}
+	if !strings.Contains(result, "alice") {
+		t.Errorf("expected alice in result, got: %s", result)
+	}
+	if !strings.Contains(result, "5 msgs") {
+		t.Errorf("expected '5 msgs' for alice, got: %s", result)
+	}
+	if !strings.Contains(result, "bob") {
+		t.Errorf("expected bob in result, got: %s", result)
+	}
+	// alice should be ranked #1.
+	if !strings.Contains(result, "1. alice") {
+		t.Errorf("expected alice at rank 1, got: %s", result)
+	}
+
+	// Test with limit.
+	result2, err := queryTopYappers(ctx, db, nil, ev, "2", "", false)
+	if err != nil {
+		t.Fatalf("queryTopYappers with limit: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(result2), "\n")
+	// Header line + 2 results.
+	if len(lines) != 3 {
+		t.Errorf("expected 3 lines (header + 2 results), got %d: %s", len(lines), result2)
+	}
+
+	// Bot and old messages should not appear.
+	if strings.Contains(result, "bot") {
+		t.Errorf("bot messages should be excluded, got: %s", result)
+	}
+	if strings.Contains(result, "old") {
+		t.Errorf("old messages should be excluded, got: %s", result)
+	}
+	if strings.Contains(result, "other") {
+		t.Errorf("messages from other rooms should be excluded, got: %s", result)
+	}
 }

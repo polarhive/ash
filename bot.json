@@ -67,6 +67,19 @@
             "prompt": "Respond as an AI assistant using WhatsApp-style markdown formatting (*bold*, _italic_, ~strikethrough~, ```code```). Do not use emojis, no double asterisk pair for bold **** only use single**, no md ## headings or tables. Be helpful, truthful, and engaging.",
             "input_type": "text",
             "output_type": "text"
+        },
+        "uwu": {
+            "type": "builtin",
+            "command": "uwuify",
+            "input_type": "text",
+            "output_type": "text"
+        },
+        "yap": {
+            "type": "builtin",
+            "command": "yap",
+            "input_type": "text",
+            "output_type": "text",
+            "mention": true
         }
     }
 }

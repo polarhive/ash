@@ -22,7 +22,7 @@
     "DB_PATH": "./data/messages.db",
     "LINKS_JSON_PATH": "./data/links.json",
     "BOT_CONFIG_PATH": "./bot.json",
-    "DEBUG": false,
+    "DEBUG": true,
     "DRY_RUN": false,
     "OPT_OUT_TAG": "#private"
 }

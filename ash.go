@@ -683,7 +683,7 @@ func (app *App) dispatchBotCommand(evCtx context.Context, ev *event.Event, msgDa
 
 	// Run the command in a goroutine to avoid blocking other messages.
 	go func() {
-		resp, err := FetchBotCommand(evCtx, &cmdCfg, app.Cfg.LinkstashURL, ev, app.Client, app.Cfg.GroqAPIKey, label)
+		resp, err := FetchBotCommand(evCtx, &cmdCfg, app.Cfg.LinkstashURL, ev, app.Client, app.Cfg.GroqAPIKey, label, app.MessagesDB)
 		var body string
 		if err != nil {
 			log.Error().Err(err).Str("cmd", cmd).Msg("failed to execute bot command")
