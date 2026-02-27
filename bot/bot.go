@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/polarhive/ash/util"
+
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -166,7 +168,17 @@ func (s *KnockKnockState) Delete(evID id.EventID) {
 // Yap leaderboard
 // ---------------------------------------------------------------------------
 
-// QueryTopYappers returns the top N message senders in the last 24h for the
+// YapTimezone is the timezone used to determine "start of day" for the yap
+// leaderboard. Defaults to UTC. Set via config.json "TIMEZONE" field.
+var YapTimezone = time.UTC
+
+// startOfToday returns midnight in the configured YapTimezone as Unix millis.
+func startOfToday() int64 {
+	now := time.Now().In(YapTimezone)
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, YapTimezone).UnixMilli()
+}
+
+// QueryTopYappers returns the top N message senders since midnight for the
 // current room, excluding messages that start with the bot label (e.g. [BOT]).
 func QueryTopYappers(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client, ev *event.Event, args string, replyLabel string, mention bool) (string, error) {
 	if db == nil {
@@ -190,7 +202,7 @@ func QueryTopYappers(ctx context.Context, db *sql.DB, matrixClient *mautrix.Clie
 	}
 
 	roomID := string(ev.RoomID)
-	cutoff := time.Now().Add(-24 * time.Hour).UnixMilli()
+	cutoff := startOfToday()
 
 	rows, err := db.QueryContext(ctx, `
 		SELECT sender, SUM(LENGTH(body) - LENGTH(REPLACE(body, ' ', '')) + 1) as word_count
@@ -245,13 +257,13 @@ func QueryTopYappers(ctx context.Context, db *sql.DB, matrixClient *mautrix.Clie
 	}
 
 	if len(entries) == 0 {
-		return "no messages found in the last 24h", nil
+		return "no messages found today", nil
 	}
 
 	// Build plain text and HTML versions.
 	var plain, html strings.Builder
-	plain.WriteString(replyLabel + "top yappers (last 24h):\n")
-	html.WriteString(replyLabel + "top yappers (last 24h):<br>")
+	plain.WriteString(replyLabel + "top yappers (today):\n")
+	html.WriteString(replyLabel + "top yappers (today):<br>")
 	for i, e := range entries {
 		plain.WriteString(fmt.Sprintf("%d. %s \u2014 %d words\n", i+1, e.display, e.count))
 		if mention {
@@ -281,7 +293,7 @@ func QueryTopYappers(ctx context.Context, db *sql.DB, matrixClient *mautrix.Clie
 }
 
 // queryYapGuess handles "/bot yap guess N". It looks up the caller's actual
-// position on the 24h word-count leaderboard and reports the difference.
+// position on today's (since midnight UTC) word-count leaderboard and reports the difference.
 func queryYapGuess(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client, ev *event.Event, guessArg string, replyLabel string) (string, error) {
 	guess := 1
 	if guessArg != "" {
@@ -292,7 +304,7 @@ func queryYapGuess(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client
 
 	roomID := string(ev.RoomID)
 	senderID := string(ev.Sender)
-	cutoff := time.Now().Add(-24 * time.Hour).UnixMilli()
+	cutoff := startOfToday()
 
 	rows, err := db.QueryContext(ctx, `
 		SELECT sender, SUM(LENGTH(body) - LENGTH(REPLACE(body, ' ', '')) + 1) as word_count
@@ -327,7 +339,7 @@ func queryYapGuess(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client
 	}
 
 	if actualPos == 0 {
-		return replyLabel + "you have no messages in the last 24h!", nil
+		return "you have no messages today!", nil
 	}
 
 	diff := guess - actualPos
@@ -358,6 +370,82 @@ func queryYapGuess(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client
 		return "", nil
 	}
 	return msg, nil
+}
+
+// ---------------------------------------------------------------------------
+// Random quote
+// ---------------------------------------------------------------------------
+
+// QueryRandomQuote picks a random message from the room's history (excluding
+// bot messages and commands) and formats it as a quote.
+func QueryRandomQuote(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client, ev *event.Event, args string, replyLabel string, mention bool) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("no database available")
+	}
+
+	roomID := string(ev.RoomID)
+
+	// Parse duration argument (default 24h)
+	durSec, err := util.ParseDurationArg(args)
+	if err != nil {
+		durSec = 24 * 3600 // fallback to 24h
+	}
+	cutoff := time.Now().Unix() - durSec
+
+	row := db.QueryRowContext(ctx, `
+		SELECT sender, body, ts_ms
+		FROM messages
+		WHERE room_id = ?
+		  AND body NOT LIKE '[BOT]%'
+		  AND body NOT LIKE '/bot %'
+		  AND msgtype = 'm.text'
+		  AND LENGTH(body) > 5
+		  AND ts_ms >= ? * 1000
+		ORDER BY RANDOM()
+		LIMIT 1
+	`, roomID, cutoff)
+
+	var sender, body string
+	var tsMs int64
+	if err := row.Scan(&sender, &body, &tsMs); err != nil {
+		return "no messages found to quote", nil
+	}
+
+	// Resolve display name.
+	display := sender
+	if matrixClient != nil {
+		if resp, err := matrixClient.JoinedMembers(ctx, ev.RoomID); err == nil {
+			if member, ok := resp.Joined[id.UserID(sender)]; ok && member.DisplayName != "" {
+				display = member.DisplayName
+			}
+		}
+	}
+	if display == sender && strings.HasPrefix(sender, "@") {
+		if idx := strings.Index(sender, ":"); idx > 0 {
+			display = sender[1:idx]
+		}
+	}
+
+	ts := time.UnixMilli(tsMs).In(YapTimezone)
+	date := ts.Format("02 Jan 2006")
+
+	plain := fmt.Sprintf("%s> %s\n> \u2014 %s, %s", replyLabel, body, display, date)
+	html := fmt.Sprintf("%s<blockquote>%s<br>\u2014 <i>%s, %s</i></blockquote>", replyLabel, body, display, date)
+
+	if matrixClient != nil {
+		content := event.MessageEventContent{
+			MsgType:       event.MsgText,
+			Body:          plain,
+			Format:        event.FormatHTML,
+			FormattedBody: html,
+			RelatesTo:     &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: ev.ID}},
+		}
+		if _, err := matrixClient.SendMessageEvent(ctx, ev.RoomID, event.EventMessage, &content); err != nil {
+			return "", fmt.Errorf("send quote reply: %w", err)
+		}
+		return "", nil
+	}
+	return plain, nil
 }
 
 // ---------------------------------------------------------------------------

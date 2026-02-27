@@ -138,6 +138,12 @@
             "command": "knockknock",
             "input_type": "text",
             "output_type": "text"
+        },
+        "quote": {
+            "type": "builtin",
+            "command": "quote",
+            "input_type": "text",
+            "output_type": "text"
         }
     }
 }

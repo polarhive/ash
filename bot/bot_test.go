@@ -131,7 +131,7 @@ func TestQueryTopYappers(t *testing.T) {
 	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
 		"bot-2", room, "@bot:example.com", now, "/bot help", "m.text")
 
-	// Old message — should be excluded (>24h ago).
+	// Old message — should be excluded (before today UTC).
 	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
 		"old-1", room, "@old:example.com", now-100000000, "ancient msg", "m.text")
 
@@ -268,5 +268,85 @@ func TestQueryYapGuess(t *testing.T) {
 	}
 	if !strings.Contains(result, "no messages") {
 		t.Errorf("expected no messages for unknown sender, got: %s", result)
+	}
+}
+
+func TestQueryRandomQuote(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS messages (
+		id TEXT PRIMARY KEY,
+		room_id TEXT,
+		sender TEXT,
+		ts_ms INTEGER,
+		body TEXT,
+		msgtype TEXT,
+		raw_json TEXT
+	)`)
+	if err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	room := "!testroom:example.com"
+	ev := &event.Event{RoomID: id.RoomID(room)}
+	ctx := context.Background()
+
+	// Empty room — should return "no messages found".
+	result, err := QueryRandomQuote(ctx, db, nil, ev, "", "", false)
+	if err != nil {
+		t.Fatalf("QueryRandomQuote empty: %v", err)
+	}
+	if !strings.Contains(result, "no messages") {
+		t.Errorf("expected 'no messages' for empty room, got: %s", result)
+	}
+
+	// Insert messages: one recent, one old.
+	now := time.Now().UnixMilli()
+	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+		"msg-1", room, "@alice:example.com", now, "the quick brown fox jumps", "m.text")
+	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+		"msg-2", room, "@bob:example.com", now-3*86400000, "hello world from 3 days ago", "m.text")
+
+	// Should return only recent message for 1d.
+	result, err = QueryRandomQuote(ctx, db, nil, ev, "1d", "", false)
+	if err != nil {
+		t.Fatalf("QueryRandomQuote 1d: %v", err)
+	}
+	if !strings.Contains(result, "fox jumps") {
+		t.Errorf("expected recent quote, got: %s", result)
+	}
+	if strings.Contains(result, "3 days ago") {
+		t.Errorf("should not quote old message, got: %s", result)
+	}
+
+	// Should return either for 1w.
+	result, err = QueryRandomQuote(ctx, db, nil, ev, "1w", "", false)
+	if err != nil {
+		t.Fatalf("QueryRandomQuote 1w: %v", err)
+	}
+	if !strings.Contains(result, "fox jumps") && !strings.Contains(result, "3 days ago") {
+		t.Errorf("expected any quote, got: %s", result)
+	}
+
+	// Bot messages should be excluded.
+	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+		"bot-1", room, "@bot:example.com", now, "[BOT] I am a bot message", "m.text")
+
+	result, err = QueryRandomQuote(ctx, db, nil, ev, "1d", "", false)
+	if err != nil {
+		t.Fatalf("QueryRandomQuote bot: %v", err)
+	}
+	if strings.Contains(result, "[BOT]") {
+		t.Errorf("bot messages should be excluded, got: %s", result)
+	}
+	if !strings.Contains(result, "> ") || !strings.Contains(result, "\u2014") {
+		t.Errorf("expected blockquote format, got: %s", result)
+	}
+	if !strings.Contains(result, "alice") && !strings.Contains(result, "bob") {
+		t.Errorf("expected alice or bob in quote, got: %s", result)
 	}
 }

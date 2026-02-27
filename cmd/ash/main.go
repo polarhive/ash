@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -91,6 +92,16 @@ func run(ctx context.Context, metaDB *sql.DB, messagesDB *sql.DB, cfg *config.Co
 		log.Warn().Err(err).Str("path", botCfgPath).Msg("failed to load bot config (continuing without)")
 	} else {
 		log.Info().Str("path", botCfgPath).Msg("loaded bot config")
+	}
+
+	// Set yap leaderboard timezone from config (defaults to UTC).
+	if cfg.Timezone != "" {
+		if tz, err := time.LoadLocation(cfg.Timezone); err != nil {
+			log.Warn().Err(err).Str("tz", cfg.Timezone).Msg("invalid TIMEZONE in config, using UTC")
+		} else {
+			bot.YapTimezone = tz
+			log.Info().Str("tz", cfg.Timezone).Msg("yap leaderboard timezone set")
+		}
 	}
 
 	readyChan := make(chan bool)

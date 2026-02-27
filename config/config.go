@@ -36,6 +36,7 @@ type Config struct {
 	DryRun        bool          `json:"DRY_RUN"`
 	DeviceName    string        `json:"MATRIX_DEVICE_NAME"`
 	OptOutTag     string        `json:"OPT_OUT_TAG"`
+	Timezone      string        `json:"TIMEZONE,omitempty"`
 }
 
 // LoadConfig reads and parses the config.json file.

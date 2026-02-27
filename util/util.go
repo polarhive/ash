@@ -96,3 +96,38 @@ func FormatPosts(posts []interface{}, linkstashURL string) string {
 	sb.WriteString(fmt.Sprintf("\nSee full list: %s", linkstashURL))
 	return sb.String()
 }
+
+// ParseDurationArg parses duration strings like '1d', '2d', '1w', '1m', '24h' into seconds.
+func ParseDurationArg(arg string) (int64, error) {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return 24 * 3600, nil // default 24h
+	}
+	var n int64
+	var unit string
+	if _, err := fmt.Sscanf(arg, "%dd", &n); err == nil {
+		return n * 86400, nil
+	}
+	if _, err := fmt.Sscanf(arg, "%dw", &n); err == nil {
+		return n * 7 * 86400, nil
+	}
+	if _, err := fmt.Sscanf(arg, "%dm", &n); err == nil {
+		return n * 30 * 86400, nil
+	}
+	if _, err := fmt.Sscanf(arg, "%dh", &n); err == nil {
+		return n * 3600, nil
+	}
+	if _, err := fmt.Sscanf(arg, "%d%s", &n, &unit); err == nil {
+		switch unit {
+		case "d":
+			return n * 86400, nil
+		case "w":
+			return n * 7 * 86400, nil
+		case "m":
+			return n * 30 * 86400, nil
+		case "h":
+			return n * 3600, nil
+		}
+	}
+	return 0, fmt.Errorf("invalid duration: %s", arg)
+}

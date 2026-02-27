@@ -1,4 +1,4 @@
-.PHONY: build run clean test deps help docker-build
+.PHONY: build run clean test deps help docker-build pull push
 
 # Detect OS and arch
 UNAME_S := $(shell uname -s)
@@ -49,13 +49,18 @@ docker-build: ## Build using Docker for cross-compilation to Ubuntu
 	docker build --platform linux/amd64 -t ash .
 	docker run --rm -v $(PWD):/host ash cp /usr/local/bin/ash /host/ash-linux-amd64
 
-# Pull configuration
+# Sync configuration
 RSYNC_OPTS ?= -avzhP --delete
-PULL_SRC ?= ark:ash/data/
+REMOTE_DATA ?= ark:ash/data/
 
-pull: ## Pull the remote 'data' directory into local ./data/ (overwrites). Set PULL_SRC to change source.
+pull: ## Pull remote db into local ./data/ (stops remote bot first)
+	ssh ark sudo systemctl stop ash.service
 	@mkdir -p data
-	rsync $(RSYNC_OPTS) $(PULL_SRC) ./data/
+	rsync $(RSYNC_OPTS) $(REMOTE_DATA) ./data/
+
+push: ## Push local ./data/ to remote (restarts remote bot after)
+	rsync $(RSYNC_OPTS) ./data/ $(REMOTE_DATA)
+	ssh ark sudo systemctl restart ash.service
 
 .DEFAULT_GOAL := run
 

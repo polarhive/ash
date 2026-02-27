@@ -24,5 +24,6 @@
     "BOT_CONFIG_PATH": "./bot.json",
     "DEBUG": true,
     "DRY_RUN": false,
-    "OPT_OUT_TAG": "#private"
+    "OPT_OUT_TAG": "#private",
+    "TIMEZONE": "Asia/Kolkata"
 }
