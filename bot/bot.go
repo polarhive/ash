@@ -204,18 +204,26 @@ func QueryTopYappers(ctx context.Context, db *sql.DB, matrixClient *mautrix.Clie
 	roomID := string(ev.RoomID)
 	cutoff := startOfToday()
 
+	// determine bot user ID, so we can ignore certain messages that only the
+	// bot itself should not be credited for.  (The bot may still appear if it
+	// sends normal chat messages.)
+	botID := ""
+	if matrixClient != nil {
+		botID = string(matrixClient.UserID)
+	}
+
 	rows, err := db.QueryContext(ctx, `
 		SELECT sender, SUM(LENGTH(body) - LENGTH(REPLACE(body, ' ', '')) + 1) as word_count
 		FROM messages
 		WHERE room_id = ?
 		  AND ts_ms >= ?
-		  AND body NOT LIKE '[BOT]%'
 		  AND body NOT LIKE '/bot %'
+		  AND (body NOT LIKE '[BOT] %' OR sender != ?)
 		  AND msgtype = 'm.text'
 		GROUP BY sender
 		ORDER BY word_count DESC
 		LIMIT ?
-	`, roomID, cutoff, limit)
+	`, roomID, cutoff, botID, limit)
 	if err != nil {
 		return "", fmt.Errorf("query yappers: %w", err)
 	}
@@ -306,17 +314,25 @@ func queryYapGuess(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client
 	senderID := string(ev.Sender)
 	cutoff := startOfToday()
 
+	// as with QueryTopYappers we only filter out bot‑labelled messages when
+	// they originate from the bot account itself.  everyone else's "[BOT] …"
+	// messages are fair game.
+	botID := ""
+	if matrixClient != nil {
+		botID = string(matrixClient.UserID)
+	}
+
 	rows, err := db.QueryContext(ctx, `
 		SELECT sender, SUM(LENGTH(body) - LENGTH(REPLACE(body, ' ', '')) + 1) as word_count
 		FROM messages
 		WHERE room_id = ?
 		  AND ts_ms >= ?
-		  AND body NOT LIKE '[BOT]%'
 		  AND body NOT LIKE '/bot %'
+		  AND (body NOT LIKE '[BOT] %' OR sender != ?)
 		  AND msgtype = 'm.text'
 		GROUP BY sender
 		ORDER BY word_count DESC
-	`, roomID, cutoff)
+	`, roomID, cutoff, botID)
 	if err != nil {
 		return "", fmt.Errorf("query yap guess: %w", err)
 	}
@@ -392,18 +408,24 @@ func QueryRandomQuote(ctx context.Context, db *sql.DB, matrixClient *mautrix.Cli
 	}
 	cutoff := time.Now().Unix() - durSec
 
+	// ignore messages from the bot itself when we know its user ID
+	botID := ""
+	if matrixClient != nil {
+		botID = string(matrixClient.UserID)
+	}
+
 	row := db.QueryRowContext(ctx, `
 		SELECT sender, body, ts_ms
 		FROM messages
 		WHERE room_id = ?
-		  AND body NOT LIKE '[BOT]%'
+		  AND sender != ?
 		  AND body NOT LIKE '/bot %'
 		  AND msgtype = 'm.text'
 		  AND LENGTH(body) > 5
 		  AND ts_ms >= ? * 1000
 		ORDER BY RANDOM()
 		LIMIT 1
-	`, roomID, cutoff)
+	`, roomID, botID, cutoff)
 
 	var sender, body string
 	var tsMs int64

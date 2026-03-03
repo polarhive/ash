@@ -60,6 +60,7 @@ pull: ## Pull remote db into local ./data/ (stops remote bot first)
 
 push: ## Push local ./data/ to remote (restarts remote bot after)
 	rsync $(RSYNC_OPTS) ./data/ $(REMOTE_DATA)
+	rsync -avzP *.json 'ark:ash' 
 	ssh ark sudo systemctl restart ash.service
 
 .DEFAULT_GOAL := run

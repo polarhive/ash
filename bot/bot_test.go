@@ -9,6 +9,7 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -125,11 +126,18 @@ func TestQueryTopYappers(t *testing.T) {
 	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
 		"carol-0", room, "@carol:example.com", now, "sup", "m.text")
 
-	// Bot messages — should be excluded.
+	// Bot messages — the bot account should not receive credit for its own
+	// '[BOT]' prefix announcements, but regular chat lines still count.  We
+	// include both kinds to exercise the filtering.
 	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
 		"bot-1", room, "@bot:example.com", now, "[BOT] hello", "m.text")
 	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
 		"bot-2", room, "@bot:example.com", now, "/bot help", "m.text")
+	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+		"bot-3", room, "@bot:example.com", now, "just chatting", "m.text")
+	// A message from a normal user that starts with the bot label should still count.
+	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+		"bob-botprefix", room, "@bob:example.com", now, "[BOT] trick", "m.text")
 
 	// Old message — should be excluded (before today UTC).
 	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -139,6 +147,10 @@ func TestQueryTopYappers(t *testing.T) {
 	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
 		"other-1", "!otherroom:example.com", "@other:example.com", now, "wrong room", "m.text")
 
+	// prepare a dummy matrix client with the bot's own user ID
+	dummyClient := &mautrix.Client{}
+	dummyClient.UserID = id.UserID("@bot:example.com")
+
 	ev := &event.Event{
 		RoomID: id.RoomID(room),
 	}
@@ -146,7 +158,7 @@ func TestQueryTopYappers(t *testing.T) {
 	ctx := context.Background()
 
 	// Test default (top 5).
-	result, err := QueryTopYappers(ctx, db, nil, ev, "", "", false)
+	result, err := QueryTopYappers(ctx, db, dummyClient, ev, "", "", false)
 	if err != nil {
 		t.Fatalf("QueryTopYappers: %v", err)
 	}
@@ -159,13 +171,17 @@ func TestQueryTopYappers(t *testing.T) {
 	if !strings.Contains(result, "bob") {
 		t.Errorf("expected bob in result, got: %s", result)
 	}
+	// bob should have 8 words now (including manual [BOT] prefix message).
+	if !strings.Contains(result, "8 words") {
+		t.Errorf("expected bob to have 8 words (manual [BOT] counts), got: %s", result)
+	}
 	// alice should be ranked #1.
 	if !strings.Contains(result, "1. alice") {
 		t.Errorf("expected alice at rank 1, got: %s", result)
 	}
 
 	// Test with limit.
-	result2, err := QueryTopYappers(ctx, db, nil, ev, "2", "", false)
+	result2, err := QueryTopYappers(ctx, db, dummyClient, ev, "2", "", false)
 	if err != nil {
 		t.Fatalf("QueryTopYappers with limit: %v", err)
 	}
@@ -175,9 +191,16 @@ func TestQueryTopYappers(t *testing.T) {
 		t.Errorf("expected 3 lines (header + 2 results), got %d: %s", len(lines), result2)
 	}
 
-	// Bot and old messages should not appear.
-	if strings.Contains(result, "bot") {
-		t.Errorf("bot messages should be excluded, got: %s", result)
+	// The bot should appear only with the non‑prefix line we added above.
+	if !strings.Contains(result, "bot") {
+		t.Errorf("bot messages should be included, got: %s", result)
+	}
+	// count should reflect the two-word chat message, not the '[BOT]' one.
+	if !strings.Contains(result, "2 words") {
+		t.Errorf("expected bot to have 2 words (just chatting), got: %s", result)
+	}
+	if strings.Contains(result, "[BOT] hello") {
+		t.Errorf("bot prefix message should be ignored, got: %s", result)
 	}
 	if strings.Contains(result, "old") {
 		t.Errorf("old messages should be excluded, got: %s", result)
@@ -210,7 +233,10 @@ func TestQueryYapGuess(t *testing.T) {
 	now := time.Now().UnixMilli()
 	room := "!testroom:example.com"
 
-	// alice=10 words (rank 1), bob=6 words (rank 2), carol=1 word (rank 3)
+	// alice=10 words (rank 1), bob=6 words (rank 2), carol=1 word (rank 3).
+	// Add a [BOT] prefix message from bob to ensure it's counted, and a
+	// self‑prefix message from the bot itself which should be ignored by the
+	// query.
 	for i := 0; i < 5; i++ {
 		_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
 			fmt.Sprintf("alice-%d", i), room, "@alice:example.com", now-int64(i*1000), fmt.Sprintf("hello %d", i), "m.text")
@@ -219,17 +245,37 @@ func TestQueryYapGuess(t *testing.T) {
 		_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
 			fmt.Sprintf("bob-%d", i), room, "@bob:example.com", now-int64(i*1000), fmt.Sprintf("hey %d", i), "m.text")
 	}
+	// manual prefix from bob
+	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+		"bob-botprefix", room, "@bob:example.com", now, "[BOT] sly", "m.text")
+	// prefix from the bot which should be ignored by the filter
+	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+		"bot-prefix", room, "@bot:example.com", now, "[BOT] ignore", "m.text")
 	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
 		"carol-0", room, "@carol:example.com", now, "sup", "m.text")
 
 	ctx := context.Background()
 
-	// Bob guesses rank 1 but is actually rank 2.
+	// first, exercise the bot's own user: it only sent a [BOT] prefix message so
+	// after filtering it should have no words recorded for today.
 	ev := &event.Event{
 		RoomID: id.RoomID(room),
 	}
+	ev.Sender = "@bot:example.com"
+	// dummy client to exercise bot filtering
+	dummyClient := &mautrix.Client{}
+	dummyClient.UserID = id.UserID("@bot:example.com")
+	result, err := QueryTopYappers(ctx, db, dummyClient, ev, "guess 1", "", false)
+	if err != nil {
+		t.Fatalf("queryYapGuess bot: %v", err)
+	}
+	if !strings.Contains(result, "no messages") {
+		t.Errorf("expected bot to have no messages after prefix filter, got: %s", result)
+	}
+
+	// Bob guesses rank 1 but is actually rank 2.
 	ev.Sender = "@bob:example.com"
-	result, err := QueryTopYappers(ctx, db, nil, ev, "guess 1", "", false)
+	result, err = QueryTopYappers(ctx, db, dummyClient, ev, "guess 1", "", false)
 	if err != nil {
 		t.Fatalf("queryYapGuess: %v", err)
 	}
@@ -238,6 +284,10 @@ func TestQueryYapGuess(t *testing.T) {
 	}
 	if !strings.Contains(result, "1 position(s) higher") {
 		t.Errorf("expected 'higher than you thought', got: %s", result)
+	}
+	// because bob had an extra two-word message starting with [BOT], ensure that is reflected
+	if !strings.Contains(result, "(8 words)") {
+		t.Errorf("expected bob's count to include manual prefix message (8 words), got: %s", result)
 	}
 
 	// Alice guesses rank 1 — exactly right.
@@ -294,9 +344,12 @@ func TestQueryRandomQuote(t *testing.T) {
 	room := "!testroom:example.com"
 	ev := &event.Event{RoomID: id.RoomID(room)}
 	ctx := context.Background()
+	// bot client used by the filtering code
+	dummyClient := &mautrix.Client{}
+	dummyClient.UserID = id.UserID("@bot:example.com")
 
 	// Empty room — should return "no messages found".
-	result, err := QueryRandomQuote(ctx, db, nil, ev, "", "", false)
+	result, err := QueryRandomQuote(ctx, db, dummyClient, ev, "", "", false)
 	if err != nil {
 		t.Fatalf("QueryRandomQuote empty: %v", err)
 	}
@@ -312,7 +365,7 @@ func TestQueryRandomQuote(t *testing.T) {
 		"msg-2", room, "@bob:example.com", now-3*86400000, "hello world from 3 days ago", "m.text")
 
 	// Should return only recent message for 1d.
-	result, err = QueryRandomQuote(ctx, db, nil, ev, "1d", "", false)
+	result, err = QueryRandomQuote(ctx, db, dummyClient, ev, "1d", "", false)
 	if err != nil {
 		t.Fatalf("QueryRandomQuote 1d: %v", err)
 	}
@@ -324,7 +377,7 @@ func TestQueryRandomQuote(t *testing.T) {
 	}
 
 	// Should return either for 1w.
-	result, err = QueryRandomQuote(ctx, db, nil, ev, "1w", "", false)
+	result, err = QueryRandomQuote(ctx, db, dummyClient, ev, "1w", "", false)
 	if err != nil {
 		t.Fatalf("QueryRandomQuote 1w: %v", err)
 	}
@@ -332,11 +385,14 @@ func TestQueryRandomQuote(t *testing.T) {
 		t.Errorf("expected any quote, got: %s", result)
 	}
 
-	// Bot messages should be excluded.
+	// Bot messages should be excluded by sender.
 	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
 		"bot-1", room, "@bot:example.com", now, "[BOT] I am a bot message", "m.text")
+	// but a user-sent message that begins with the label should be allowed
+	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+		"bob-botprefix", room, "@bob:example.com", now, "[BOT] not-a-bot", "m.text")
 
-	result, err = QueryRandomQuote(ctx, db, nil, ev, "1d", "", false)
+	result, err = QueryRandomQuote(ctx, db, dummyClient, ev, "1d", "", false)
 	if err != nil {
 		t.Fatalf("QueryRandomQuote bot: %v", err)
 	}
