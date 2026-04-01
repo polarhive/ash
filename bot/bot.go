@@ -6,12 +6,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/polarhive/ash/matrix"
 	"github.com/polarhive/ash/util"
 
 	"maunium.net/go/mautrix"
@@ -408,29 +410,41 @@ func QueryRandomQuote(ctx context.Context, db *sql.DB, matrixClient *mautrix.Cli
 	}
 	cutoff := time.Now().Unix() - durSec
 
-	// ignore messages from the bot itself when we know its user ID
 	botID := ""
 	if matrixClient != nil {
 		botID = string(matrixClient.UserID)
 	}
 
-	row := db.QueryRowContext(ctx, `
-		SELECT sender, body, ts_ms
-		FROM messages
-		WHERE room_id = ?
-		  AND sender != ?
-		  AND body NOT LIKE '/bot %'
-		  AND msgtype = 'm.text'
-		  AND LENGTH(body) > 5
-		  AND ts_ms >= ? * 1000
-		ORDER BY RANDOM()
-		LIMIT 1
-	`, roomID, botID, cutoff)
+	matrix.ParseEvent(ev)
+	msg := ev.Content.AsMessage()
+	replyTargetID := string(ev.ID)
+	var replyText string
+	if msg != nil && msg.RelatesTo != nil && msg.RelatesTo.InReplyTo != nil && msg.RelatesTo.InReplyTo.EventID != "" {
+		replyTargetID = string(msg.RelatesTo.InReplyTo.EventID)
+		replyText, _ = getMessageBodyByID(ctx, db, replyTargetID)
+		if replyText == "" && matrixClient != nil {
+			original, err := matrix.FetchAndDecrypt(ctx, matrixClient, ev.RoomID, msg.RelatesTo.InReplyTo.EventID)
+			if err == nil {
+				if om := original.Content.AsMessage(); om != nil {
+					replyText = om.Body
+				}
+			}
+		}
+	}
 
 	var sender, body string
 	var tsMs int64
-	if err := row.Scan(&sender, &body, &tsMs); err != nil {
-		return "no messages found to quote", nil
+	if replyText != "" {
+		sender, body, tsMs, err = findBestQuoteBySimilarity(ctx, db, roomID, botID, cutoff, replyTargetID, replyText)
+		if err != nil {
+			return "", err
+		}
+	}
+	if sender == "" {
+		sender, body, tsMs, err = findRandomQuote(ctx, db, roomID, botID, cutoff)
+		if err != nil {
+			return "no messages found to quote", nil
+		}
 	}
 
 	// Resolve display name.
@@ -460,7 +474,7 @@ func QueryRandomQuote(ctx context.Context, db *sql.DB, matrixClient *mautrix.Cli
 			Body:          plain,
 			Format:        event.FormatHTML,
 			FormattedBody: html,
-			RelatesTo:     &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: ev.ID}},
+			RelatesTo:     &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: id.EventID(replyTargetID)}},
 		}
 		if _, err := matrixClient.SendMessageEvent(ctx, ev.RoomID, event.EventMessage, &content); err != nil {
 			return "", fmt.Errorf("send quote reply: %w", err)
@@ -470,11 +484,129 @@ func QueryRandomQuote(ctx context.Context, db *sql.DB, matrixClient *mautrix.Cli
 	return plain, nil
 }
 
-// ---------------------------------------------------------------------------
-// UwUify
-// ---------------------------------------------------------------------------
+func getMessageBodyByID(ctx context.Context, db *sql.DB, messageID string) (string, error) {
+	var body string
+	if err := db.QueryRowContext(ctx, `SELECT body FROM messages WHERE id = ?`, messageID).Scan(&body); err != nil {
+		return "", err
+	}
+	return body, nil
+}
 
-// Uwuify transforms text into uwu-speak.
+func findRandomQuote(ctx context.Context, db *sql.DB, roomID, botID string, cutoff int64) (string, string, int64, error) {
+	var sender, body string
+	var tsMs int64
+	if err := db.QueryRowContext(ctx, `
+		SELECT sender, body, ts_ms
+		FROM messages
+		WHERE room_id = ?
+		  AND sender != ?
+		  AND body NOT LIKE '/bot %'
+		  AND msgtype = 'm.text'
+		  AND LENGTH(body) > 5
+		  AND ts_ms >= ? * 1000
+		ORDER BY RANDOM()
+		LIMIT 1
+	`, roomID, botID, cutoff).Scan(&sender, &body, &tsMs); err != nil {
+		return "", "", 0, err
+	}
+	return sender, body, tsMs, nil
+}
+
+func findBestQuoteBySimilarity(ctx context.Context, db *sql.DB, roomID, botID string, cutoff int64, avoidID string, targetText string) (string, string, int64, error) {
+	// If sqlite-vec is available, you can replace this scan with a proper vector index
+	// query using CREATE VIRTUAL TABLE ... USING vector(...), then ORDER BY embedding <=> ?
+	// For now we use a local tf-based cosine similarity fallback.
+	targetVec := tfVector(targetText)
+	if len(targetVec) == 0 {
+		return "", "", 0, nil
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, sender, body, ts_ms
+		FROM messages
+		WHERE room_id = ?
+		  AND sender != ?
+		  AND body NOT LIKE '/bot %'
+		  AND msgtype = 'm.text'
+		  AND LENGTH(body) > 5
+		  AND ts_ms >= ? * 1000
+		  AND id != ?
+	`, roomID, botID, cutoff, avoidID)
+	if err != nil {
+		return "", "", 0, err
+	}
+	defer rows.Close()
+
+	bestScore := 0.0
+	bestSender, bestBody := "", ""
+	bestTs := int64(0)
+	for rows.Next() {
+		var idStr, sender, body string
+		var tsMs int64
+		if err := rows.Scan(&idStr, &sender, &body, &tsMs); err != nil {
+			continue
+		}
+		candVec := tfVector(body)
+		score := cosineSimilarity(targetVec, candVec)
+		if score > bestScore {
+			bestScore = score
+			bestSender = sender
+			bestBody = body
+			bestTs = tsMs
+		}
+	}
+
+	if bestScore < 0.1 {
+		return "", "", 0, nil
+	}
+	return bestSender, bestBody, bestTs, nil
+}
+
+func tfVector(text string) map[string]float64 {
+	words := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+	if len(words) == 0 {
+		return nil
+	}
+	counts := make(map[string]float64)
+	for _, w := range words {
+		if w == "" {
+			continue
+		}
+		counts[w]++
+	}
+	vec := make(map[string]float64, len(counts))
+	for k, v := range counts {
+		vec[k] = v / float64(len(words))
+	}
+	return vec
+}
+
+func cosineSimilarity(a, b map[string]float64) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0.0
+	}
+	dot := 0.0
+	for k, av := range a {
+		if bv, ok := b[k]; ok {
+			dot += av * bv
+		}
+	}
+	magA := 0.0
+	for _, v := range a {
+		magA += v * v
+	}
+	magB := 0.0
+	for _, v := range b {
+		magB += v * v
+	}
+	if magA == 0 || magB == 0 {
+		return 0.0
+	}
+	return dot / (math.Sqrt(magA) * math.Sqrt(magB))
+}
+
 func Uwuify(text string) string {
 	replacements := []struct{ old, new string }{
 		{"small", "smol"},

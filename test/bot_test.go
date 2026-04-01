@@ -8,21 +8,21 @@ import (
 
 // BotCommand represents a bot command configuration
 type BotCommand struct {
-	Type         string                 `json:"type"` // "http", "exec", "ai"
-	Method       string                 `json:"method,omitempty"`
-	URL          string                 `json:"url,omitempty"`
-	Headers      map[string]string      `json:"headers,omitempty"`
-	JSONPath     string                 `json:"json_path,omitempty"`
-	ResponseType string                 `json:"response_type,omitempty"` // "text", "json", "image"
-	Command      string                 `json:"command,omitempty"`       // for exec
-	Args         []string               `json:"args,omitempty"`          // for exec
-	InputType    string                 `json:"input_type,omitempty"`    // "none", "text", "image"
-	OutputType   string                 `json:"output_type,omitempty"`   // "text", "image"
-	Model        string                 `json:"model,omitempty"`         // for ai
-	MaxTokens    int                    `json:"max_tokens,omitempty"`    // for ai
-	Prompt       string                 `json:"prompt,omitempty"`        // for ai
-	Response     string                 `json:"response,omitempty"`      // static response
-	Params       map[string]interface{} `json:"params,omitempty"`        // additional params
+	Type         string            `json:"type"` // "http", "exec", "ai"
+	Method       string            `json:"method,omitempty"`
+	URL          string            `json:"url,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	JSONPath     string            `json:"json_path,omitempty"`
+	ResponseType string            `json:"response_type,omitempty"` // "text", "json", "image"
+	Command      string            `json:"command,omitempty"`       // for exec
+	Args         []string          `json:"args,omitempty"`          // for exec
+	InputType    string            `json:"input_type,omitempty"`    // "none", "text", "image"
+	OutputType   string            `json:"output_type,omitempty"`   // "text", "image"
+	Model        string            `json:"model,omitempty"`         // for ai
+	MaxTokens    int               `json:"max_tokens,omitempty"`    // for ai
+	Prompt       string            `json:"prompt,omitempty"`        // for ai
+	Response     string            `json:"response,omitempty"`      // static response
+	Params       map[string]any    `json:"params,omitempty"`        // additional params
 }
 
 // BotConfig is the structure of bot.json
@@ -206,7 +206,7 @@ func TestBotConfigJSONStructure(t *testing.T) {
 		t.Fatalf("Failed to read bot.json: %v", err)
 	}
 
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("bot.json is not valid JSON: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestBotConfigJSONStructure(t *testing.T) {
 		t.Error("bot.json missing 'commands' key")
 	}
 
-	if commands, ok := raw["commands"].(map[string]interface{}); ok {
+	if commands, ok := raw["commands"].(map[string]any); ok {
 		if len(commands) == 0 {
 			t.Error("bot.json has empty commands map")
 		}

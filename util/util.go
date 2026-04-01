@@ -2,17 +2,13 @@ package util
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
 // InSlice checks whether item is present in slice.
 func InSlice(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(slice, item)
 }
 
 // Truncate shortens a string to maxLen and appends "..." if truncated.
@@ -55,15 +51,15 @@ func StripCommandPrefix(body string) string {
 }
 
 // ExtractJSONPath extracts a value from parsed JSON using a dot-separated path.
-func ExtractJSONPath(root interface{}, path string) interface{} {
+func ExtractJSONPath(root any, path string) any {
 	if path == "" {
 		return root
 	}
 	cur := root
-	for _, p := range strings.Split(path, ".") {
-		if m, ok := cur.(map[string]interface{}); ok {
+	for p := range strings.SplitSeq(path, ".") {
+		if m, ok := cur.(map[string]any); ok {
 			cur = m[p]
-		} else if arr, ok := cur.([]interface{}); ok {
+		} else if arr, ok := cur.([]any); ok {
 			var idx int
 			if _, err := fmt.Sscanf(p, "%d", &idx); err == nil && idx >= 0 && idx < len(arr) {
 				cur = arr[idx]
@@ -78,14 +74,11 @@ func ExtractJSONPath(root interface{}, path string) interface{} {
 }
 
 // FormatPosts formats an array of post objects into a readable string.
-func FormatPosts(posts []interface{}, linkstashURL string) string {
+func FormatPosts(posts []any, linkstashURL string) string {
 	var sb strings.Builder
-	limit := 5
-	if len(posts) < limit {
-		limit = len(posts)
-	}
-	for i := 0; i < limit; i++ {
-		if m, ok := posts[i].(map[string]interface{}); ok {
+	limit := min(len(posts), 5)
+	for i := range limit {
+		if m, ok := posts[i].(map[string]any); ok {
 			title, _ := m["title"].(string)
 			url, _ := m["url"].(string)
 			if title != "" && url != "" {

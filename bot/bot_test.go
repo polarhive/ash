@@ -360,7 +360,7 @@ func TestQueryRandomQuote(t *testing.T) {
 	// Insert messages: one recent, one old.
 	now := time.Now().UnixMilli()
 	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
-		"msg-1", room, "@alice:example.com", now, "the quick brown fox jumps", "m.text")
+		"msg-1", room, "@alice:example.com", now, "savage and funny quote to match", "m.text")
 	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
 		"msg-2", room, "@bob:example.com", now-3*86400000, "hello world from 3 days ago", "m.text")
 
@@ -383,6 +383,27 @@ func TestQueryRandomQuote(t *testing.T) {
 	}
 	if !strings.Contains(result, "fox jumps") && !strings.Contains(result, "3 days ago") {
 		t.Errorf("expected any quote, got: %s", result)
+	}
+
+	// If /bot quote is invoked as a reply, try to prefer a semantically similar quote.
+	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
+		"msg-3", room, "@carol:example.com", now, "lol this is a savage quote", "m.text")
+
+	replyEv := &event.Event{
+		RoomID: id.RoomID(room),
+		ID:     id.EventID("cmd-quote"),
+		Content: event.Content{Parsed: &event.MessageEventContent{
+			Body:      "/bot quote",
+			RelatesTo: &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: id.EventID("msg-1")}},
+		}},
+	}
+
+	result, err = QueryRandomQuote(ctx, db, nil, replyEv, "1d", "", false)
+	if err != nil {
+		t.Fatalf("QueryRandomQuote reply mode: %v", err)
+	}
+	if !strings.Contains(result, "savage quote") {
+		t.Errorf("expected edgy quote to be prioritized, got: %s", result)
 	}
 
 	// Bot messages should be excluded by sender.

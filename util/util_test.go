@@ -7,8 +7,8 @@ import (
 )
 
 func TestExtractJSONPath(t *testing.T) {
-	root := map[string]interface{}{
-		"a": map[string]interface{}{
+	root := map[string]any{
+		"a": map[string]any{
 			"b": "value",
 			"c": 42.0,
 		},
@@ -16,7 +16,7 @@ func TestExtractJSONPath(t *testing.T) {
 	}
 	tests := []struct {
 		path string
-		want interface{}
+		want any
 	}{
 		{"", root},
 		{"top", "hello"},
@@ -43,9 +43,9 @@ func TestExtractJSONPath(t *testing.T) {
 }
 
 func TestFormatPosts(t *testing.T) {
-	posts := []interface{}{
-		map[string]interface{}{"title": "Post 1", "url": "https://a.com"},
-		map[string]interface{}{"title": "Post 2", "url": "https://b.com"},
+	posts := []any{
+		map[string]any{"title": "Post 1", "url": "https://a.com"},
+		map[string]any{"title": "Post 2", "url": "https://b.com"},
 	}
 	result := FormatPosts(posts, "https://linkstash.example.com")
 	if result == "" {
@@ -61,9 +61,9 @@ func TestFormatPosts(t *testing.T) {
 
 func TestFormatPostsLimit(t *testing.T) {
 	// More than 5 posts should be capped
-	posts := make([]interface{}, 10)
+	posts := make([]any, 10)
 	for i := range posts {
-		posts[i] = map[string]interface{}{
+		posts[i] = map[string]any{
 			"title": "Post",
 			"url":   "https://example.com",
 		}
@@ -71,7 +71,7 @@ func TestFormatPostsLimit(t *testing.T) {
 	result := FormatPosts(posts, "https://linkstash.example.com")
 	// Count lines with "- " prefix (capped at 5)
 	lines := 0
-	for _, line := range strings.Split(result, "\n") {
+	for line := range strings.SplitSeq(result, "\n") {
 		if len(line) > 0 && line[0] == '-' {
 			lines++
 		}

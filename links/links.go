@@ -21,13 +21,13 @@ func ExtractLinks(text string) []string {
 // SendHook posts a link to the configured webhook URL.
 func SendHook(hookURL, link, key, sender, roomID, roomComment string, sendUser, sendTopic bool) {
 	resolvedLink := resolveURL(link)
-	payload := map[string]interface{}{
-		"link": map[string]interface{}{
+	payload := map[string]any{
+		"link": map[string]any{
 			"url": resolvedLink,
 		},
 	}
 	if sendUser {
-		payload["link"].(map[string]interface{})["submittedBy"] = sender
+		payload["link"].(map[string]any)["submittedBy"] = sender
 	}
 	if sendTopic && (roomID != "" || roomComment != "") {
 		payload["room"] = map[string]string{

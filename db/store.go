@@ -42,10 +42,10 @@ func (s *MetaSyncStore) LoadFilterID(ctx context.Context, userID id.UserID) (str
 func (s *MetaSyncStore) SaveFilterID(ctx context.Context, userID id.UserID, filterID string) error {
 	return nil
 }
-func (s *MetaSyncStore) LoadPresence(ctx context.Context, userID id.UserID) (interface{}, error) {
+func (s *MetaSyncStore) LoadPresence(ctx context.Context, userID id.UserID) (any, error) {
 	return nil, nil
 }
-func (s *MetaSyncStore) SavePresence(ctx context.Context, userID id.UserID, presence interface{}) error {
+func (s *MetaSyncStore) SavePresence(ctx context.Context, userID id.UserID, presence any) error {
 	return nil
 }
 func (s *MetaSyncStore) LoadAccountData(ctx context.Context, userID id.UserID, eventType string) (json.RawMessage, error) {
@@ -194,8 +194,8 @@ func ExportAllSnapshots(database *sql.DB, rooms []config.RoomIDEntry, path strin
 		JOIN messages m ON m.id = l.message_id
 		WHERE m.room_id IN (`+strings.Repeat("?,", len(rooms)-1)+`?)
 		ORDER BY m.room_id, l.ts_ms ASC, l.message_id, l.idx;
-	`, func() []interface{} {
-		args := make([]interface{}, len(rooms))
+	`, func() []any {
+		args := make([]any, len(rooms))
 		for i, r := range rooms {
 			args[i] = r.ID
 		}
