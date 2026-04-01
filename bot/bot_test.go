@@ -385,6 +385,15 @@ func TestQueryRandomQuote(t *testing.T) {
 		t.Errorf("expected any quote, got: %s", result)
 	}
 
+	// Default (no arg) should search full history, including old messages.
+	result, err = QueryRandomQuote(ctx, db, dummyClient, ev, "", "", false)
+	if err != nil {
+		t.Fatalf("QueryRandomQuote default: %v", err)
+	}
+	if !strings.Contains(result, "fox jumps") && !strings.Contains(result, "3 days ago") {
+		t.Errorf("expected full-history quote, got: %s", result)
+	}
+
 	// If /bot quote is invoked as a reply, try to prefer a semantically similar quote.
 	_, _ = db.Exec(`INSERT INTO messages(id, room_id, sender, ts_ms, body, msgtype) VALUES (?, ?, ?, ?, ?, ?)`,
 		"msg-3", room, "@carol:example.com", now, "lol this is a savage quote", "m.text")

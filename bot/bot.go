@@ -406,9 +406,12 @@ func QueryRandomQuote(ctx context.Context, db *sql.DB, matrixClient *mautrix.Cli
 	// Parse duration argument (default 24h)
 	durSec, err := util.ParseDurationArg(args)
 	if err != nil {
-		durSec = 24 * 3600 // fallback to 24h
+		durSec = 0 // fallback to full history
 	}
-	cutoff := time.Now().Unix() - durSec
+	cutoff := int64(0)
+	if durSec > 0 {
+		cutoff = time.Now().Unix() - durSec
+	}
 
 	botID := ""
 	if matrixClient != nil {

@@ -94,7 +94,7 @@ func FormatPosts(posts []any, linkstashURL string) string {
 func ParseDurationArg(arg string) (int64, error) {
 	arg = strings.TrimSpace(arg)
 	if arg == "" {
-		return 24 * 3600, nil // default 24h
+		return 0, nil // default full history (no cutoff)
 	}
 	var n int64
 	var unit string
