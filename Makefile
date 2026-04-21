@@ -1,4 +1,4 @@
-.PHONY: build run clean test deps help docker-build pull push
+.PHONY: build run clean test deps help docker-build pull push checkpoint
 
 # Detect OS and arch
 UNAME_S := $(shell uname -s)
@@ -45,6 +45,12 @@ test: ## Run tests
 	go test ./...
 	cd test && go test -v
 
+checkpoint: ## Checkpoint all SQLite databases (merge WAL files)
+	sqlite3 data/messages.db "PRAGMA wal_checkpoint(RESTART);"
+	sqlite3 data/meta.db "PRAGMA wal_checkpoint(RESTART);"
+	sqlite3 data/meta.db.crypto "PRAGMA wal_checkpoint(RESTART);"
+	@echo "Database checkpoints complete"
+
 docker-build: ## Build using Docker for cross-compilation to Ubuntu
 	docker build --platform linux/amd64 -t ash .
 	docker run --rm -v $(PWD):/host ash cp /usr/local/bin/ash /host/ash-linux-amd64
@@ -57,8 +63,12 @@ pull: ## Pull remote db into local ./data/ (stops remote bot first)
 	ssh ark sudo systemctl stop ash.service
 	@mkdir -p data
 	rsync $(RSYNC_OPTS) $(REMOTE_DATA) ./data/
+	ssh ark sudo systemctl start ash.service
+
 
 push: ## Push local ./data/ to remote (restarts remote bot after)
+	ssh ark sudo systemctl stop ash.service
+	rsync $(RSYNC_OPTS) $(REMOTE_DATA) /tmp/ash-data-backup
 	rsync $(RSYNC_OPTS) ./data/ $(REMOTE_DATA)
 	rsync -avzP *.json 'ark:ash' 
 	ssh ark sudo systemctl restart ash.service
