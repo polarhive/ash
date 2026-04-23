@@ -144,6 +144,18 @@
             "command": "quote",
             "input_type": "text",
             "output_type": "text"
+        },
+        "sus": {
+            "type": "builtin",
+            "command": "sus",
+            "input_type": "text",
+            "output_type": "text"
+        },
+        "quotes": {
+            "type": "builtin",
+            "command": "quotes",
+            "input_type": "text",
+            "output_type": "text"
         }
     }
 }

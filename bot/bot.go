@@ -565,6 +565,53 @@ func findBestQuoteBySimilarity(ctx context.Context, db *sql.DB, roomID, botID st
 	return bestSender, bestBody, bestTs, nil
 }
 
+// findSusMessage finds an older message from targetSender that is semantically
+// similar to targetText.
+func findSusMessage(ctx context.Context, db *sql.DB, roomID, botID, avoidID, targetSender, targetText string) (string, string, int64, error) {
+	targetVec := tfVector(targetText)
+	if len(targetVec) == 0 {
+		return "", "", 0, nil
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, body, ts_ms
+		FROM messages
+		WHERE room_id = ?
+		  AND sender = ?
+		  AND body NOT LIKE '/bot %'
+		  AND msgtype = 'm.text'
+		  AND LENGTH(body) > 5
+		  AND id != ?
+	`, roomID, targetSender, avoidID)
+	if err != nil {
+		return "", "", 0, err
+	}
+	defer rows.Close()
+
+	bestScore := 0.0
+	bestBody := ""
+	bestTs := int64(0)
+	for rows.Next() {
+		var idStr, body string
+		var tsMs int64
+		if err := rows.Scan(&idStr, &body, &tsMs); err != nil {
+			continue
+		}
+		candVec := tfVector(body)
+		score := cosineSimilarity(targetVec, candVec)
+		if score > bestScore {
+			bestScore = score
+			bestBody = body
+			bestTs = tsMs
+		}
+	}
+
+	if bestScore < 0.1 {
+		return "", "", 0, nil
+	}
+	return targetSender, bestBody, bestTs, nil
+}
+
 func tfVector(text string) map[string]float64 {
 	words := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
 		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
@@ -669,4 +716,246 @@ func Uwuify(text string) string {
 	result += faces[int(b[0])%len(faces)]
 
 	return result
+}
+
+// ---------------------------------------------------------------------------
+// Sus (gotcha) - find older similar messages from same user
+// ---------------------------------------------------------------------------
+
+// QuerySusMessage logs an older similar message from the same user to the
+// quotewall. It must be used as a reply to another message.
+// Returns empty string (silent logging).
+func QuerySusMessage(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client, ev *event.Event, args string, replyLabel string, mention bool) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("no database available")
+	}
+
+	matrix.ParseEvent(ev)
+	msg := ev.Content.AsMessage()
+	if msg == nil {
+		return "", fmt.Errorf("not a message event")
+	}
+
+	// This command must be used as a reply
+	if msg.RelatesTo == nil || msg.RelatesTo.InReplyTo == nil || msg.RelatesTo.InReplyTo.EventID == "" {
+		return "reply to a message to use this command", nil
+	}
+
+	// Get the message being replied to
+	replyTargetID := string(msg.RelatesTo.InReplyTo.EventID)
+	targetBody, err := getMessageBodyByID(ctx, db, replyTargetID)
+	if err != nil || targetBody == "" {
+		// Try fetching from Matrix if not in DB
+		if matrixClient != nil {
+			original, err := matrix.FetchAndDecrypt(ctx, matrixClient, ev.RoomID, msg.RelatesTo.InReplyTo.EventID)
+			if err == nil {
+				if om := original.Content.AsMessage(); om != nil {
+					targetBody = om.Body
+				}
+			}
+		}
+	}
+
+	if targetBody == "" {
+		return "couldn't fetch the replied-to message", nil
+	}
+
+	// Get the sender and timestamp of the message being replied to
+	targetSender, _, err := getSenderAndTsByID(ctx, db, replyTargetID)
+	if err != nil || targetSender == "" {
+		// Try fetching from Matrix if not in DB
+		if matrixClient != nil {
+			original, err := matrix.FetchAndDecrypt(ctx, matrixClient, ev.RoomID, msg.RelatesTo.InReplyTo.EventID)
+			if err == nil {
+				targetSender = string(original.Sender)
+			}
+		}
+	}
+
+	if targetSender == "" {
+		return "couldn't determine who sent the message", nil
+	}
+
+	roomID := string(ev.RoomID)
+	botID := ""
+	if matrixClient != nil {
+		botID = string(matrixClient.UserID)
+	}
+
+	// Find an older similar message from the same user
+	sender, body, tsMs, err := findSusMessage(ctx, db, roomID, botID, replyTargetID, targetSender, targetBody)
+	if err != nil {
+		return "", err
+	}
+
+	if sender == "" {
+		// No matching message found, don't log anything
+		return "", nil
+	}
+
+	// Log to quotewall
+	if err := logToQuotewall(ctx, db, roomID, targetSender, body, tsMs, string(ev.Sender)); err != nil {
+		return "", err
+	}
+
+	return "👀", nil
+}
+
+// QueryQuotesForUser retrieves all logged quotes for a user in this room.
+// Shows top 5 by default, or a custom number if provided as args.
+func QueryQuotesForUser(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client, ev *event.Event, args string, replyLabel string, mention bool) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("no database available")
+	}
+
+	matrix.ParseEvent(ev)
+	msg := ev.Content.AsMessage()
+	if msg == nil {
+		return "", fmt.Errorf("not a message event")
+	}
+
+	// This command must be used as a reply to determine which user to query
+	if msg.RelatesTo == nil || msg.RelatesTo.InReplyTo == nil || msg.RelatesTo.InReplyTo.EventID == "" {
+		return "reply to a message to use this command", nil
+	}
+
+	// Get the sender of the message being replied to
+	targetSender, _, err := getSenderAndTsByID(ctx, db, string(msg.RelatesTo.InReplyTo.EventID))
+	if err != nil || targetSender == "" {
+		// Try fetching from Matrix if not in DB
+		if matrixClient != nil {
+			original, err := matrix.FetchAndDecrypt(ctx, matrixClient, ev.RoomID, msg.RelatesTo.InReplyTo.EventID)
+			if err == nil {
+				targetSender = string(original.Sender)
+			}
+		}
+	}
+
+	if targetSender == "" {
+		return "couldn't determine who sent the message", nil
+	}
+
+	// Parse limit argument (default 5)
+	limit := 5
+	if args != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(args)); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	roomID := string(ev.RoomID)
+
+	// Fetch quotes from quotewall
+	quotes, err := getQuotesForUser(ctx, db, roomID, targetSender, limit)
+	if err != nil {
+		return "", err
+	}
+
+	if len(quotes) == 0 {
+		return "no quotes logged yet", nil
+	}
+
+	// Resolve display name for header
+	display := targetSender
+	if matrixClient != nil {
+		if resp, err := matrixClient.JoinedMembers(ctx, ev.RoomID); err == nil {
+			if member, ok := resp.Joined[id.UserID(targetSender)]; ok && member.DisplayName != "" {
+				display = member.DisplayName
+			}
+		}
+	}
+	if display == targetSender && strings.HasPrefix(targetSender, "@") {
+		if idx := strings.Index(targetSender, ":"); idx > 0 {
+			display = targetSender[1:idx]
+		}
+	}
+
+	// Build output
+	var plain, html strings.Builder
+	plain.WriteString(fmt.Sprintf("%squotes for %s:\n", replyLabel, display))
+	html.WriteString(fmt.Sprintf("%squotes for %s:<br>", replyLabel, display))
+
+	for i, q := range quotes {
+		date := time.UnixMilli(q.LoggedAt).In(YapTimezone).Format("02 Jan 2006")
+		plain.WriteString(fmt.Sprintf("> %d. %s (%s)\n", i+1, q.Message, date))
+		html.WriteString(fmt.Sprintf("> %d. %s (%s)<br>", i+1, q.Message, date))
+	}
+
+	if matrixClient != nil {
+		content := event.MessageEventContent{
+			MsgType:       event.MsgText,
+			Body:          strings.TrimSpace(plain.String()),
+			Format:        event.FormatHTML,
+			FormattedBody: strings.TrimSuffix(html.String(), "<br>"),
+			RelatesTo:     &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: ev.ID}},
+		}
+		if _, err := matrixClient.SendMessageEvent(ctx, ev.RoomID, event.EventMessage, &content); err != nil {
+			return "", fmt.Errorf("send quotes reply: %w", err)
+		}
+		return "", nil
+	}
+	return strings.TrimSpace(plain.String()), nil
+}
+
+type Quote struct {
+	Message  string
+	LoggedAt int64
+}
+
+func logToQuotewall(ctx context.Context, db *sql.DB, roomID, targetUser, targetMessage string, targetTs int64, loggedBy string) error {
+	id := fmt.Sprintf("qw_%s_%d", roomID, targetTs)
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO quotewall(id, room_id, target_user, target_message, target_ts_ms, logged_by, logged_at_ms)
+		VALUES(?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(room_id, target_user, target_ts_ms) DO NOTHING
+	`, id, roomID, targetUser, targetMessage, targetTs, loggedBy, time.Now().UnixMilli())
+	return err
+}
+
+func getQuotesForUser(ctx context.Context, db *sql.DB, roomID, targetUser string, limit int) ([]Quote, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT target_message, logged_at_ms
+		FROM quotewall
+		WHERE room_id = ? AND target_user = ?
+		ORDER BY logged_at_ms DESC
+		LIMIT ?
+	`, roomID, targetUser, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var quotes []Quote
+	for rows.Next() {
+		var message string
+		var loggedAt int64
+		if err := rows.Scan(&message, &loggedAt); err != nil {
+			continue
+		}
+		quotes = append(quotes, Quote{Message: message, LoggedAt: loggedAt})
+	}
+
+	return quotes, nil
+}
+
+func getQuoteCount(ctx context.Context, db *sql.DB, roomID, targetUser string) (int, error) {
+	var count int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM quotewall WHERE room_id = ? AND target_user = ?
+	`, roomID, targetUser).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func getSenderAndTsByID(ctx context.Context, db *sql.DB, messageID string) (string, int64, error) {
+	var sender string
+	var ts int64
+	if err := db.QueryRowContext(ctx, `SELECT sender, ts_ms FROM messages WHERE id = ?`, messageID).Scan(&sender, &ts); err != nil {
+		return "", 0, err
+	}
+	return sender, ts, nil
 }
