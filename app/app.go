@@ -107,6 +107,16 @@ func (app *App) HandleMessage(evCtx context.Context, ev *event.Event) {
 		}
 	}
 
+	// Check for trivia quiz replies.
+	if msgData.Msg.RelatesTo != nil && msgData.Msg.RelatesTo.InReplyTo != nil {
+		speaker, ok := bot.GetTriviaAnswer(msgData.Msg.RelatesTo.InReplyTo.EventID)
+		if ok && speaker != "" {
+			// This is a reply to a trivia message - reveal the answer
+			go app.revealTriviaAnswer(evCtx, ev, speaker)
+			return
+		}
+	}
+
 	// Handle bot commands.
 	if currentRoom.AllowedCommands != nil && (strings.HasPrefix(msgData.Msg.Body, "/bot") || strings.HasPrefix(msgData.Msg.Body, "@gork")) {
 		app.dispatchBotCommand(evCtx, ev, msgData, currentRoom)
@@ -256,6 +266,28 @@ func (app *App) handleKnockKnockReply(ctx context.Context, ev *event.Event, step
 		body := step.Label + step.Joke.Punchline
 		SendBotReply(ctx, app.Client, ev.RoomID, ev.ID, body, "knockknock")
 	}
+}
+
+// revealTriviaAnswer reveals who said a trivia message when someone replies.
+func (app *App) revealTriviaAnswer(ctx context.Context, ev *event.Event, speaker string) {
+	// Resolve display name for speaker
+	display := speaker
+	if app.Client != nil {
+		if resp, err := app.Client.JoinedMembers(ctx, ev.RoomID); err == nil {
+			if member, ok := resp.Joined[id.UserID(speaker)]; ok && member.DisplayName != "" {
+				display = member.DisplayName
+			}
+		}
+	}
+	if display == speaker && strings.HasPrefix(speaker, "@") {
+		if idx := strings.Index(speaker, ":"); idx > 0 {
+			display = speaker[1:idx]
+		}
+	}
+
+	label := ResolveReplyLabel(app.Cfg, app.BotCfg)
+	body := fmt.Sprintf("%s%s said that", label, display)
+	SendBotReply(ctx, app.Client, ev.RoomID, ev.ID, body, "trivia")
 }
 
 // processLinks handles link extraction, hooks, and snapshot exports.

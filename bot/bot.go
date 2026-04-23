@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	grand "math/rand"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +22,9 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
+
+// Global trivia state (initialized by app)
+var triviaState *TriviaState
 
 // ---------------------------------------------------------------------------
 // Bot config types & loading
@@ -164,6 +169,46 @@ func (s *KnockKnockState) Delete(evID id.EventID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.pending, evID)
+}
+
+// ---------------------------------------------------------------------------
+// Trivia state management
+// ---------------------------------------------------------------------------
+
+// TriviaAnswer holds the speaker for a trivia quiz.
+type TriviaAnswer struct {
+	Speaker string
+}
+
+// TriviaState manages pending trivia quiz answers.
+type TriviaState struct {
+	mu      sync.Mutex
+	answers map[id.EventID]string // bot message ID -> speaker
+}
+
+// NewTriviaState creates a new TriviaState.
+func NewTriviaState() *TriviaState {
+	return &TriviaState{answers: make(map[id.EventID]string)}
+}
+
+// InitTriviaState initializes the global trivia state.
+func InitTriviaState() {
+	triviaState = NewTriviaState()
+}
+
+// Set stores the speaker for a trivia quiz message.
+func (s *TriviaState) Set(botMsgID id.EventID, speaker string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.answers[botMsgID] = speaker
+}
+
+// Get retrieves the speaker for a trivia quiz by bot message ID.
+func (s *TriviaState) Get(botMsgID id.EventID) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.answers[botMsgID]
+	return v, ok
 }
 
 // ---------------------------------------------------------------------------
@@ -958,4 +1003,554 @@ func getSenderAndTsByID(ctx context.Context, db *sql.DB, messageID string) (stri
 		return "", 0, err
 	}
 	return sender, ts, nil
+}
+
+// ---------------------------------------------------------------------------
+// Flip Opinion - track opinion changes over time
+// ---------------------------------------------------------------------------
+
+// QueryFlipOpinion finds older messages from the same user with opposite sentiment.
+// It must be used as a reply to another message.
+func QueryFlipOpinion(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client, ev *event.Event, args string, replyLabel string, mention bool) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("no database available")
+	}
+
+	matrix.ParseEvent(ev)
+	msg := ev.Content.AsMessage()
+	if msg == nil {
+		return "", fmt.Errorf("not a message event")
+	}
+
+	// This command must be used as a reply
+	if msg.RelatesTo == nil || msg.RelatesTo.InReplyTo == nil || msg.RelatesTo.InReplyTo.EventID == "" {
+		return "reply to a message to use this command", nil
+	}
+
+	// Get the message being replied to
+	replyTargetID := string(msg.RelatesTo.InReplyTo.EventID)
+	targetBody, targetTs, err := getMessageBodyAndTsByID(ctx, db, replyTargetID)
+	if err != nil || targetBody == "" {
+		// Try fetching from Matrix if not in DB
+		if matrixClient != nil {
+			original, err := matrix.FetchAndDecrypt(ctx, matrixClient, ev.RoomID, msg.RelatesTo.InReplyTo.EventID)
+			if err == nil {
+				if om := original.Content.AsMessage(); om != nil {
+					targetBody = om.Body
+					targetTs = original.Timestamp
+				}
+			}
+		}
+	}
+
+	if targetBody == "" {
+		return "couldn't fetch the replied-to message", nil
+	}
+
+	// Get the sender of the message being replied to
+	targetSender, _, err := getSenderAndTsByID(ctx, db, replyTargetID)
+	if err != nil || targetSender == "" {
+		// Try fetching from Matrix if not in DB
+		if matrixClient != nil {
+			original, err := matrix.FetchAndDecrypt(ctx, matrixClient, ev.RoomID, msg.RelatesTo.InReplyTo.EventID)
+			if err == nil {
+				targetSender = string(original.Sender)
+			}
+		}
+	}
+
+	if targetSender == "" {
+		return "couldn't determine who sent the message", nil
+	}
+
+	roomID := string(ev.RoomID)
+
+	// Find older message with opposite sentiment from same user
+	oldBody, oldTs, err := findFlipOpinion(ctx, db, roomID, targetSender, replyTargetID, targetBody)
+	if err != nil {
+		return "", err
+	}
+
+	if oldBody == "" {
+		return "no opinion flip found", nil
+	}
+
+	// Resolve display name
+	display := targetSender
+	if matrixClient != nil {
+		if resp, err := matrixClient.JoinedMembers(ctx, ev.RoomID); err == nil {
+			if member, ok := resp.Joined[id.UserID(targetSender)]; ok && member.DisplayName != "" {
+				display = member.DisplayName
+			}
+		}
+	}
+	if display == targetSender && strings.HasPrefix(targetSender, "@") {
+		if idx := strings.Index(targetSender, ":"); idx > 0 {
+			display = targetSender[1:idx]
+		}
+	}
+
+	oldDate := time.UnixMilli(oldTs).In(YapTimezone).Format("02 Jan 2006")
+	newDate := time.UnixMilli(targetTs).In(YapTimezone).Format("02 Jan 2006")
+
+	plain := fmt.Sprintf("%s🔄 flip:\n> %s (%s)\n> ↓\n> %s (%s)", replyLabel, oldBody, oldDate, targetBody, newDate)
+	html := fmt.Sprintf("%s🔄 flip:<br><blockquote>%s (%s)<br>↓<br>%s (%s)</blockquote>", replyLabel, oldBody, oldDate, targetBody, newDate)
+
+	if matrixClient != nil {
+		content := event.MessageEventContent{
+			MsgType:       event.MsgText,
+			Body:          plain,
+			Format:        event.FormatHTML,
+			FormattedBody: html,
+			RelatesTo:     &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: id.EventID(replyTargetID)}},
+		}
+		if _, err := matrixClient.SendMessageEvent(ctx, ev.RoomID, event.EventMessage, &content); err != nil {
+			return "", fmt.Errorf("send flip reply: %w", err)
+		}
+		return "", nil
+	}
+	return plain, nil
+}
+
+func getMessageBodyAndTsByID(ctx context.Context, db *sql.DB, messageID string) (string, int64, error) {
+	var body string
+	var ts int64
+	if err := db.QueryRowContext(ctx, `SELECT body, ts_ms FROM messages WHERE id = ?`, messageID).Scan(&body, &ts); err != nil {
+		return "", 0, err
+	}
+	return body, ts, nil
+}
+
+// findFlipOpinion finds an older message from the same user with opposite sentiment
+func findFlipOpinion(ctx context.Context, db *sql.DB, roomID, targetSender, avoidID, targetText string) (string, int64, error) {
+	targetVec := tfVector(targetText)
+	if len(targetVec) == 0 {
+		return "", 0, nil
+	}
+
+	targetHasNegation := hasNegationKeywords(targetText)
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, body, ts_ms
+		FROM messages
+		WHERE room_id = ?
+		  AND sender = ?
+		  AND body NOT LIKE '/bot %'
+		  AND msgtype = 'm.text'
+		  AND LENGTH(body) > 5
+		  AND id != ?
+	`, roomID, targetSender, avoidID)
+	if err != nil {
+		return "", 0, err
+	}
+	defer rows.Close()
+
+	bestScore := 0.0
+	bestBody := ""
+	bestTs := int64(0)
+
+	for rows.Next() {
+		var idStr, body string
+		var tsMs int64
+		if err := rows.Scan(&idStr, &body, &tsMs); err != nil {
+			continue
+		}
+
+		candVec := tfVector(body)
+		score := cosineSimilarity(targetVec, candVec)
+
+		// Need semantic similarity but opposite sentiment
+		candHasNegation := hasNegationKeywords(body)
+		oppositeOpinion := targetHasNegation != candHasNegation
+
+		if score > 0.1 && oppositeOpinion && score > bestScore {
+			bestScore = score
+			bestBody = body
+			bestTs = tsMs
+		}
+	}
+
+	return bestBody, bestTs, nil
+}
+
+// hasNegationKeywords detects if a message has negative sentiment indicators
+func hasNegationKeywords(text string) bool {
+	lower := strings.ToLower(text)
+	negations := []string{
+		"not", "no", "never", "don't", "doesn't", "didn't", "won't", "can't",
+		"hate", "terrible", "awful", "bad", "worse", "worst", "horrible",
+		"disagree", "wrong", "false", "nope", "nah", "ugh", "yuck",
+	}
+	for _, neg := range negations {
+		if strings.Contains(lower, neg) {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// Trivia - Quiz: who said this?
+// ---------------------------------------------------------------------------
+
+// QueryTrivia picks a random message and asks the room "who said this?"
+func QueryTrivia(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client, ev *event.Event, args string, replyLabel string, mention bool) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("no database available")
+	}
+
+	roomID := string(ev.RoomID)
+	botID := ""
+	if matrixClient != nil {
+		botID = string(matrixClient.UserID)
+	}
+
+	// Pick a random message from the room
+	var body, speaker string
+	err := db.QueryRowContext(ctx, `
+		SELECT body, sender
+		FROM messages
+		WHERE room_id = ?
+		  AND sender != ?
+		  AND body NOT LIKE '/bot %'
+		  AND msgtype = 'm.text'
+		  AND LENGTH(body) > 5
+		ORDER BY RANDOM()
+		LIMIT 1
+	`, roomID, botID).Scan(&body, &speaker)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "no messages found", nil
+		}
+		return "", err
+	}
+
+	// Resolve display name for speaker (for answer, but hidden in quiz)
+	display := speaker
+	if matrixClient != nil {
+		if resp, err := matrixClient.JoinedMembers(ctx, ev.RoomID); err == nil {
+			if member, ok := resp.Joined[id.UserID(speaker)]; ok && member.DisplayName != "" {
+				display = member.DisplayName
+			}
+		}
+	}
+	if display == speaker && strings.HasPrefix(speaker, "@") {
+		if idx := strings.Index(speaker, ":"); idx > 0 {
+			display = speaker[1:idx]
+		}
+	}
+
+	plain := fmt.Sprintf("%s❓ who said: %q", replyLabel, body)
+	html := fmt.Sprintf("%s❓ who said: <i>%s</i>", replyLabel, body)
+
+	if matrixClient != nil {
+		content := event.MessageEventContent{
+			MsgType:       event.MsgText,
+			Body:          plain,
+			Format:        event.FormatHTML,
+			FormattedBody: html,
+			RelatesTo:     &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: ev.ID}},
+		}
+		resp, err := matrixClient.SendMessageEvent(ctx, ev.RoomID, event.EventMessage, &content)
+		if err != nil {
+			return "", fmt.Errorf("send trivia quiz: %w", err)
+		}
+
+		// Store the answer in memory for later retrieval
+		if triviaState != nil {
+			triviaState.Set(resp.EventID, speaker)
+		}
+
+		return "", nil
+	}
+	return plain, nil
+}
+
+// GetTriviaAnswer looks up who said the trivia message being replied to
+func GetTriviaAnswer(botMsgID id.EventID) (string, bool) {
+	if triviaState == nil {
+		return "", false
+	}
+	return triviaState.Get(botMsgID)
+}
+
+// ---------------------------------------------------------------------------
+// Madlibs - absurd story generator
+// ---------------------------------------------------------------------------
+
+// QueryMadlibs creates an absurd story by filling in random words from room messages
+func QueryMadlibs(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client, ev *event.Event, args string, replyLabel string, mention bool) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("no database available")
+	}
+
+	roomID := string(ev.RoomID)
+
+	// Extract random words from room messages
+	words, err := extractRandomWords(ctx, db, roomID, 10)
+	if err != nil || len(words) < 3 {
+		return "not enough words in this room for madlibs :(", nil
+	}
+
+	// Madlibs templates
+	templates := []string{
+		"🎭 one day %s went to the %s and found a %s. \"this is %s!\" they yelled. then a %s appeared.",
+		"🎭 there once was a %s named %s who loved %s. suddenly, a %s %s happened and everything changed.",
+		"🎭 in the land of %s, a %s walked into a %s. it was very %s. then it said: \"i am %s!\"",
+		"🎭 a %s, a %s, and a %s walk into a bar. the bartender says \"%s\" and they all %s.",
+		"🎭 breaking news: local %s caught %s near the %s. experts say it's %s and possibly %s.",
+		"🎭 the legendary %s was known for being %s. when they met a %s, everything went %s. that's when the %s started.",
+		"🎭 dear diary, today i saw a %s do %s at the %s. it was so %s that i %s immediately.",
+		"🎭 scientists discover: %s + %s = %s, but also %s and definitely %s.",
+		"🎭 once upon a time, a %s tried to teach a %s about %s. it didn't work because %s was too %s.",
+		"🎭 if %s and %s had a baby, it would probably like %s and be very %s about %s.",
+		"🎭 the recipe for %s: take one %s, mix with %s, add %s, and whatever you do DON'T mention %s.",
+		"🎭 in an alternate timeline, %s became a %s. their first act was to ban all %s because they were too %s and %s.",
+		"🎭 the %s walked into the %s looking for %s. instead they found %s, which was %s.",
+		"🎭 if i had a dollar for every time %s %s at the %s, i'd have enough to buy a %s that's %s.",
+	}
+
+	// Pick random template
+	template := templates[grand.Intn(len(templates))]
+
+	// Fill in with random words
+	story := fmt.Sprintf(template, words[0], words[1], words[2], words[3], words[4])
+
+	if matrixClient != nil {
+		content := event.MessageEventContent{
+			MsgType:   event.MsgText,
+			Body:      story,
+			RelatesTo: &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: ev.ID}},
+		}
+		if _, err := matrixClient.SendMessageEvent(ctx, ev.RoomID, event.EventMessage, &content); err != nil {
+			return "", fmt.Errorf("send madlibs: %w", err)
+		}
+		return "", nil
+	}
+	return story, nil
+}
+
+// extractRandomWords pulls unique random words from room messages, filtering out common words and short noise
+func extractRandomWords(ctx context.Context, db *sql.DB, roomID string, count int) ([]string, error) {
+	stopwords := map[string]bool{
+		"the": true, "a": true, "an": true, "and": true, "or": true, "but": true,
+		"in": true, "on": true, "at": true, "to": true, "for": true, "of": true,
+		"is": true, "was": true, "be": true, "are": true, "been": true, "being": true,
+		"have": true, "has": true, "had": true, "do": true, "does": true, "did": true,
+		"i": true, "you": true, "he": true, "she": true, "it": true, "we": true, "they": true,
+		"this": true, "that": true, "these": true, "those": true, "my": true, "your": true,
+		"with": true, "from": true, "as": true, "by": true, "can": true,
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT body FROM messages
+		WHERE room_id = ?
+		  AND msgtype = 'm.text'
+		  AND LENGTH(body) > 5
+		  AND body NOT LIKE '/bot %'
+		ORDER BY RANDOM()
+		LIMIT 50
+	`, roomID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	wordSet := make(map[string]bool)
+	var words []string
+
+	for rows.Next() {
+		var body string
+		if err := rows.Scan(&body); err != nil {
+			continue
+		}
+
+		// Split into words and clean
+		parts := strings.FieldsFunc(body, func(r rune) bool {
+			return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '\'')
+		})
+
+		for _, word := range parts {
+			lower := strings.ToLower(word)
+			if len(lower) >= 3 && !stopwords[lower] && !wordSet[lower] {
+				wordSet[lower] = true
+				words = append(words, lower)
+				if len(words) >= count {
+					return words, nil
+				}
+			}
+		}
+	}
+
+	return words, nil
+}
+
+// ---------------------------------------------------------------------------
+// Predict - guess what someone will say next
+// ---------------------------------------------------------------------------
+
+// QueryPredict guesses what someone will say next based on their message patterns
+func QueryPredict(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client, ev *event.Event, args string, replyLabel string, mention bool) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("no database available")
+	}
+
+	matrix.ParseEvent(ev)
+	msg := ev.Content.AsMessage()
+	if msg == nil {
+		return "", fmt.Errorf("not a message event")
+	}
+
+	roomID := string(ev.RoomID)
+	var targetSender string
+
+	// Get sender from reply or from args
+	if msg.RelatesTo != nil && msg.RelatesTo.InReplyTo != nil {
+		targetSender, _, _ = getSenderAndTsByID(ctx, db, string(msg.RelatesTo.InReplyTo.EventID))
+	}
+	if targetSender == "" && len(strings.Fields(msg.Body)) > 2 {
+		// Try to get username from args
+		targetSender = strings.Fields(msg.Body)[2]
+	}
+	if targetSender == "" {
+		return "reply to someone or provide a username: /bot predict @user", nil
+	}
+
+	// Get this user's recent messages
+	rows, err := db.QueryContext(ctx, `
+		SELECT body FROM messages
+		WHERE room_id = ?
+		  AND sender = ?
+		  AND body NOT LIKE '/bot %'
+		  AND msgtype = 'm.text'
+		  AND LENGTH(body) > 5
+		ORDER BY ts_ms DESC
+		LIMIT 20
+	`, roomID, targetSender)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	var messages []string
+	for rows.Next() {
+		var body string
+		if err := rows.Scan(&body); err != nil {
+			continue
+		}
+		messages = append(messages, body)
+	}
+
+	if len(messages) < 3 {
+		return "not enough messages from this user to predict", nil
+	}
+
+	// Analyze patterns: find common topics, words, sentiment
+	prediction := generatePrediction(messages)
+	if prediction == "" {
+		prediction = "hmm, they're unpredictable"
+	}
+
+	// Resolve display name
+	display := targetSender
+	if matrixClient != nil {
+		if resp, err := matrixClient.JoinedMembers(ctx, ev.RoomID); err == nil {
+			if member, ok := resp.Joined[id.UserID(targetSender)]; ok && member.DisplayName != "" {
+				display = member.DisplayName
+			}
+		}
+	}
+	if display == targetSender && strings.HasPrefix(targetSender, "@") {
+		if idx := strings.Index(targetSender, ":"); idx > 0 {
+			display = targetSender[1:idx]
+		}
+	}
+
+	plain := fmt.Sprintf("%s🔮 %s would probably say: %q", replyLabel, display, prediction)
+
+	if matrixClient != nil {
+		content := event.MessageEventContent{
+			MsgType:   event.MsgText,
+			Body:      plain,
+			RelatesTo: &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: ev.ID}},
+		}
+		if _, err := matrixClient.SendMessageEvent(ctx, ev.RoomID, event.EventMessage, &content); err != nil {
+			return "", fmt.Errorf("send predict: %w", err)
+		}
+		return "", nil
+	}
+	return plain, nil
+}
+
+// generatePrediction creates a plausible next message based on user patterns
+func generatePrediction(messages []string) string {
+	if len(messages) == 0 {
+		return ""
+	}
+
+	// Extract common topics/keywords from recent messages
+	wordFreq := make(map[string]int)
+	stopwords := map[string]bool{
+		"the": true, "a": true, "an": true, "and": true, "or": true, "but": true,
+		"in": true, "on": true, "at": true, "to": true, "for": true, "of": true,
+		"is": true, "was": true, "be": true, "are": true, "i": true, "you": true,
+	}
+
+	for _, msg := range messages {
+		words := strings.FieldsFunc(msg, func(r rune) bool {
+			return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
+		})
+		for _, word := range words {
+			lower := strings.ToLower(word)
+			if len(lower) > 3 && !stopwords[lower] {
+				wordFreq[lower]++
+			}
+		}
+	}
+
+	// Get top keywords
+	type kv struct {
+		Key   string
+		Value int
+	}
+	var sorted []kv
+	for k, v := range wordFreq {
+		sorted = append(sorted, kv{k, v})
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Value > sorted[j].Value })
+
+	// Pick top words and build a plausible sentence
+	templates := []string{
+		"yeah, %s is pretty %s",
+		"honestly i think %s is %s",
+		"the thing about %s is it's %s",
+		"%s is always so %s",
+		"can't stop thinking about %s being %s",
+		"ngl %s really %s",
+		"i literally can't get over how %s is so %s",
+		"okay but like %s being %s tho",
+		"fun fact: %s tends to be %s",
+		"lowkey %s is hella %s",
+		"just saying %s is kinda %s",
+		"so basically %s equals %s",
+		"living for %s being %s",
+		"me: *thinking about how %s is %s*",
+		"no but real talk %s is %s",
+		"imagine if %s wasn't so %s",
+		"peak %s is definitely %s",
+	}
+
+	if len(sorted) >= 2 {
+		template := templates[grand.Intn(len(templates))]
+		adjectives := []string{"cool", "weird", "nice", "bad", "interesting", "crazy", "good"}
+		adverb := adjectives[grand.Intn(len(adjectives))]
+		return fmt.Sprintf(template, sorted[0].Key, adverb)
+	}
+
+	if len(sorted) >= 1 {
+		return fmt.Sprintf("something about %s", sorted[0].Key)
+	}
+
+	return ""
 }

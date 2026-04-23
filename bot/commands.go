@@ -331,10 +331,14 @@ var builtinFuncs = map[string]func(string) string{
 
 // builtinDBFuncs maps builtin command names that need DB access.
 var builtinDBFuncs = map[string]func(context.Context, *sql.DB, *mautrix.Client, *event.Event, string, string, bool) (string, error){
-	"yap":    QueryTopYappers,
-	"quote":  QueryRandomQuote,
-	"sus":    QuerySusMessage,
-	"quotes": QueryQuotesForUser,
+	"yap":     QueryTopYappers,
+	"quote":   QueryRandomQuote,
+	"sus":     QuerySusMessage,
+	"quotes":  QueryQuotesForUser,
+	"flip":    QueryFlipOpinion,
+	"trivia":  QueryTrivia,
+	"madlibs": QueryMadlibs,
+	"predict": QueryPredict,
 }
 
 // ---------------------------------------------------------------------------

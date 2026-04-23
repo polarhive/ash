@@ -119,6 +119,7 @@ func run(ctx context.Context, metaDB *sql.DB, messagesDB *sql.DB, cfg *config.Co
 		ReadyChan:  readyChan,
 		KnockKnock: bot.NewKnockKnockState(),
 	}
+	bot.InitTriviaState()
 	syncer.OnEventType(event.EventMessage, a.HandleMessage)
 
 	go func() {

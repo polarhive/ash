@@ -156,6 +156,30 @@
             "command": "quotes",
             "input_type": "text",
             "output_type": "text"
+        },
+        "flip": {
+            "type": "builtin",
+            "command": "flip",
+            "input_type": "text",
+            "output_type": "text"
+        },
+        "trivia": {
+            "type": "builtin",
+            "command": "trivia",
+            "input_type": "text",
+            "output_type": "text"
+        },
+        "madlibs": {
+            "type": "builtin",
+            "command": "madlibs",
+            "input_type": "text",
+            "output_type": "text"
+        },
+        "predict": {
+            "type": "builtin",
+            "command": "predict",
+            "input_type": "text",
+            "output_type": "text"
         }
     }
 }
