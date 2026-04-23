@@ -290,6 +290,32 @@ func (app *App) revealTriviaAnswer(ctx context.Context, ev *event.Event, speaker
 	SendBotReply(ctx, app.Client, ev.RoomID, ev.ID, body, "trivia")
 }
 
+// HandleReaction stores emoji reactions to messages.
+func (app *App) HandleReaction(ctx context.Context, ev *event.Event) {
+	relatesTo := ev.Content.AsReaction()
+	if relatesTo == nil || relatesTo.RelatesTo.EventID == "" {
+		log.Debug().Msg("reaction event has no target message ID")
+		return
+	}
+
+	targetMsgID := string(relatesTo.RelatesTo.EventID)
+	emoji := relatesTo.RelatesTo.Key
+	if emoji == "" {
+		log.Debug().Str("target_msg", targetMsgID).Msg("reaction event has empty emoji")
+		return
+	}
+
+	log.Debug().Str("target_msg", targetMsgID).Str("emoji", emoji).Str("reactor", string(ev.Sender)).Msg("capturing reaction")
+
+	// Store reaction in database
+	if err := db.StoreReaction(app.MessagesDB, targetMsgID, string(ev.RoomID), emoji, string(ev.Sender), time.Now().UnixMilli()); err != nil {
+		log.Warn().Err(err).Str("target_msg", targetMsgID).Str("emoji", emoji).Msg("failed to store reaction")
+		return
+	}
+
+	log.Debug().Str("target_msg", targetMsgID).Str("emoji", emoji).Msg("reaction stored successfully")
+}
+
 // processLinks handles link extraction, hooks, and snapshot exports.
 func (app *App) processLinks(_ context.Context, ev *event.Event, msgData *db.MessageData, room config.RoomIDEntry) {
 	if len(msgData.URLs) == 0 {

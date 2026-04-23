@@ -17,6 +17,7 @@ import (
 
 	"github.com/polarhive/ash/matrix"
 	"github.com/polarhive/ash/util"
+	"github.com/rs/zerolog/log"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
@@ -232,8 +233,13 @@ func QueryTopYappers(ctx context.Context, db *sql.DB, matrixClient *mautrix.Clie
 		return "", fmt.Errorf("no database available")
 	}
 
-	// Handle "guess N" subcommand.
+	// Handle "best N" subcommand.
 	trimmed := strings.TrimSpace(args)
+	if strings.HasPrefix(strings.ToLower(trimmed), "best") {
+		return queryYapBest(ctx, db, matrixClient, ev, strings.TrimSpace(trimmed[len("best"):]), replyLabel)
+	}
+
+	// Handle "guess N" subcommand.
 	if strings.HasPrefix(strings.ToLower(trimmed), "guess") {
 		return queryYapGuess(ctx, db, matrixClient, ev, strings.TrimSpace(trimmed[len("guess"):]), replyLabel)
 	}
@@ -433,6 +439,135 @@ func queryYapGuess(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client
 		return "", nil
 	}
 	return msg, nil
+}
+
+// queryYapBest handles "/bot yap best". Shows top most-reacted messages from today.
+func queryYapBest(ctx context.Context, db *sql.DB, matrixClient *mautrix.Client, ev *event.Event, args string, replyLabel string) (string, error) {
+	limit := 10
+	if args != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(args)); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	roomID := string(ev.RoomID)
+	cutoff := startOfToday()
+
+	// Debug: check if reactions exist at all
+	var reactCount int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM reactions WHERE room_id = ? AND created_at_ms >= ?", roomID, cutoff*1000).Scan(&reactCount); err == nil {
+		log.Debug().Int("reaction_count", reactCount).Str("room", roomID).Int64("cutoff_ms", cutoff*1000).Msg("total reactions in room today")
+	}
+
+	// Get messages with reaction counts from today
+	rows, err := db.QueryContext(ctx, `
+		SELECT m.id, m.body, m.sender, COUNT(r.emoji) as reaction_count,
+		       GROUP_CONCAT(r.emoji, '') as emojis
+		FROM messages m
+		INNER JOIN reactions r ON m.id = r.message_id
+		WHERE m.room_id = ?
+		  AND m.ts_ms >= ?
+		  AND m.body NOT LIKE '/bot %'
+		  AND m.body NOT LIKE '[BOT]%'
+		  AND m.msgtype = 'm.text'
+		  AND LENGTH(m.body) > 5
+		  AND r.created_at_ms >= ?
+		GROUP BY m.id
+		HAVING COUNT(r.emoji) > 0
+		ORDER BY reaction_count DESC, m.ts_ms DESC
+		LIMIT ?
+	`, roomID, cutoff, cutoff, limit)
+	if err != nil {
+		log.Warn().Err(err).Msg("query reactions failed")
+		return "", err
+	}
+	defer rows.Close()
+
+	type bestMsg struct {
+		id        string
+		body      string
+		sender    string
+		reactions int
+		emojis    string
+	}
+	var messages []bestMsg
+	for rows.Next() {
+		var id, body, sender, emojis string
+		var reactions int
+		if err := rows.Scan(&id, &body, &sender, &reactions, &emojis); err != nil {
+			continue
+		}
+		messages = append(messages, bestMsg{id, body, sender, reactions, emojis})
+	}
+
+	if len(messages) == 0 {
+		// Debug: check if join is matching
+		var joinCount int
+		if err := db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM messages m
+			INNER JOIN reactions r ON m.id = r.message_id
+			WHERE m.room_id = ?
+		`, roomID).Scan(&joinCount); err == nil {
+			log.Debug().Int("join_matches", joinCount).Msg("messages with reactions (all time)")
+		}
+		return "no reactions today yet", nil
+	}
+
+	// Pre-fetch display names
+	displayNames := make(map[string]string)
+	if matrixClient != nil {
+		if resp, err := matrixClient.JoinedMembers(ctx, ev.RoomID); err == nil {
+			for uid, member := range resp.Joined {
+				if member.DisplayName != "" {
+					displayNames[string(uid)] = member.DisplayName
+				}
+			}
+		}
+	}
+
+	// Build output
+	var plain, html strings.Builder
+	plain.WriteString(replyLabel + "🔥 most reacted (today):\n")
+	html.WriteString(replyLabel + "🔥 most reacted (today):<br>")
+
+	for i, m := range messages {
+		display := m.sender
+		if dn, ok := displayNames[m.sender]; ok {
+			display = dn
+		} else if strings.HasPrefix(m.sender, "@") {
+			if idx := strings.Index(m.sender, ":"); idx > 0 {
+				display = m.sender[1:idx]
+			}
+		}
+
+		truncated := m.body
+		if len(truncated) > 60 {
+			truncated = truncated[:57] + "..."
+		}
+
+		plain.WriteString(fmt.Sprintf("%d. %s %s (%d) — %s\n", i+1, m.emojis, truncated, m.reactions, display))
+		html.WriteString(fmt.Sprintf("%d. %s %s (%d) — %s<br>", i+1, m.emojis, truncated, m.reactions, display))
+	}
+
+	// Send the formatted message
+	if matrixClient != nil {
+		content := event.MessageEventContent{
+			MsgType:       event.MsgText,
+			Body:          strings.TrimSpace(plain.String()),
+			Format:        event.FormatHTML,
+			FormattedBody: strings.TrimSuffix(html.String(), "<br>"),
+			RelatesTo:     &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: ev.ID}},
+		}
+		if _, err := matrixClient.SendMessageEvent(ctx, ev.RoomID, event.EventMessage, &content); err != nil {
+			return "", fmt.Errorf("send yap best reply: %w", err)
+		}
+		return "", nil
+	}
+
+	return strings.TrimSpace(plain.String()), nil
 }
 
 // ---------------------------------------------------------------------------

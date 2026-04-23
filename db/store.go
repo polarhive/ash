@@ -170,6 +170,15 @@ func StoreMessage(database *sql.DB, data *MessageData) error {
 	return nil
 }
 
+// StoreReaction persists an emoji reaction to the database.
+func StoreReaction(database *sql.DB, messageID string, roomID string, emoji string, reactor string, ts int64) error {
+	_, err := database.Exec(`
+		INSERT OR IGNORE INTO reactions(message_id, room_id, emoji, reactor, created_at_ms)
+		VALUES (?, ?, ?, ?, ?);
+	`, messageID, roomID, emoji, reactor, ts)
+	return err
+}
+
 // ---------------------------------------------------------------------------
 // Link snapshots
 // ---------------------------------------------------------------------------

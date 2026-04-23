@@ -121,6 +121,10 @@ func run(ctx context.Context, metaDB *sql.DB, messagesDB *sql.DB, cfg *config.Co
 	}
 	bot.InitTriviaState()
 	syncer.OnEventType(event.EventMessage, a.HandleMessage)
+	syncer.OnEventType(event.EventReaction, func(ctx context.Context, ev *event.Event) {
+		log.Info().Str("event_id", string(ev.ID)).Str("reactor", string(ev.Sender)).Msg("reaction event received from matrix")
+		a.HandleReaction(ctx, ev)
+	})
 
 	go func() {
 		defer func() {

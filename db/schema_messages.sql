@@ -30,3 +30,16 @@ CREATE TABLE IF NOT EXISTS quotewall (
     logged_at_ms INTEGER,
     UNIQUE(room_id, target_user, target_ts_ms)
 );
+
+-- Reactions table for tracking emoji reactions
+CREATE TABLE IF NOT EXISTS reactions (
+    message_id TEXT,
+    room_id TEXT,
+    emoji TEXT,
+    reactor TEXT,
+    created_at_ms INTEGER,
+    PRIMARY KEY (message_id, emoji, reactor)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reactions_room_ts ON reactions(room_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_reactions_msg ON reactions(message_id);
