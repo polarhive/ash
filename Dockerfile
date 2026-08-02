@@ -35,7 +35,9 @@ FROM ubuntu:latest
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends libolm3 \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libolm3 \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/ash /usr/local/bin/ash
