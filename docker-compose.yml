@@ -1,0 +1,11 @@
+services:
+  ash:
+    image: ghcr.io/polarhive/ash:latest
+    container_name: ash
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./bot.json:/app/bot.json:ro
+      - ./blacklist.json:/app/blacklist.json:ro
+      - ./data:/app/data

@@ -72,6 +72,21 @@ pairs nicely with [lava](https://polarhive.net/lava)
 3. Copy `config.json` and edit with your Matrix credentials.
 4. Run `make` to build and run.
 
+## Docker
+
+Prebuilt images are published to `ghcr.io/polarhive/ash`:
+
+```sh
+docker pull ghcr.io/polarhive/ash
+docker run -d \
+  --name ash \
+  -v "$PWD/config.json":/app/config.json \
+  -v "$PWD/data":/app/data \
+  ghcr.io/polarhive/ash
+```
+
+The bot loads `config.json` from `/app` (paths like `DB_PATH` are relative to it), and `data/` holds the SQLite databases and link exports, so mount a volume there to persist state. Rebuild the image locally with `make docker-build`.
+
 ## Structure
 
 - `ash.go`: Main application logic
