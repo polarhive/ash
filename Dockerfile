@@ -38,6 +38,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libolm3 \
     ca-certificates \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/ash /usr/local/bin/ash
