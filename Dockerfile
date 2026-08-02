@@ -33,6 +33,8 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # ---- runtime image ----
 FROM ubuntu:latest
 
+WORKDIR /app
+
 RUN apt-get update && apt-get install -y --no-install-recommends libolm3 \
     && rm -rf /var/lib/apt/lists/*
 
