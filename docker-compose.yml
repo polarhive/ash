@@ -4,7 +4,7 @@ services:
     container_name: ash
     restart: unless-stopped
     working_dir: /app
-    user: "${UID:-1000}:${GID:-1000}"
+    user: "${UID:-1001}:${GID:-1001}"
     volumes:
       - ./config.json:/app/config.json:ro
       - ./bot.json:/app/bot.json:ro
