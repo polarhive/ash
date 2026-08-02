@@ -1,6 +1,10 @@
 .git
 .gitignore
-/ash
+.git/**
+data*
+config.json
+.env
+ash*
 node_modules
 tmp
 *.log

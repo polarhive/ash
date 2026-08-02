@@ -8,8 +8,10 @@ RUN apt-get update && apt-get install -y \
 
 # Set Go environment variables for CGO
 ENV CGO_ENABLED=1
-ENV GOOS=linux
-ENV GOARCH=amd64
+ARG TARGETOS
+ARG TARGETARCH
+ENV GOOS=$TARGETOS
+ENV GOARCH=$TARGETARCH
 
 # Set working directory
 WORKDIR /app
@@ -27,11 +29,12 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     -trimpath \
     -ldflags="-s -w -buildid=" \
     -o ash ./cmd/ash
-    
+
 # ---- runtime image ----
 FROM ubuntu:latest
 
-RUN apt-get update && apt-get install -y libolm3
+RUN apt-get update && apt-get install -y --no-install-recommends libolm3 \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/ash /usr/local/bin/ash
 
