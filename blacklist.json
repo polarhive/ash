@@ -110,5 +110,13 @@
     {
         "pattern": "telegram\\.org",
         "comment": "Telegram URLs are not allowed"
+    },
+    {
+        "pattern": "whatsapp\\.com",
+        "comment": "WhatAapp URLs are not allowed"
+    },
+    {
+        "pattern": "faq.whatsapp\\.com",
+        "comment": "WhatAapp URLs are not allowed"
     }
 ]
